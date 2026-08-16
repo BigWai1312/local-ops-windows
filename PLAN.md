@@ -85,9 +85,9 @@ iconutil 生成逻辑
 
 ## 7. GitHub 插件发布方案
 
-GitHub 插件可完成：读取仓库、创建分支、创建 blob/tree/commit、更新引用和创建草稿 PR。当前连接器不能创建新仓库。
+GitHub 插件负责仓库读取、分支提交、远端核对和草稿 PR 创建；本地 Git 负责工作树审计与提交校验。
 
-可直接执行的方案是把项目发布到已有私有仓库 `BigWai1312/Codex` 的 `local-ops-windows/` 子目录，在独立分支提交并开草稿 PR。若要独立仓库 `BigWai1312/local-ops-windows`，需先在 GitHub 创建空仓库，再由插件完成后续发布。
+当前发布目标已经确定为公开 Fork `BigWai1312/local-ops-windows`，不向上游 `laogou717/local-ops` 推送。Windows 改动位于 `agent/windows-local-ops` 分支，目标基线为 Fork 的 `main`，以便保留上游来源并让衍生项目的变更可追溯。
 
 草稿 PR 必须说明：
 
@@ -103,4 +103,5 @@ GitHub 插件可完成：读取仓库、创建分支、创建 blob/tree/commit�
 - Windows 真实生命周期测试、项目检查和隐私扫描全部通过。
 - Windows zip 可重复构建并通过解压后冒烟测试。
 - 仓库保留上游许可证和 NOTICE，变更记录可追溯。
-- GitHub 目标分支、提交和草稿 PR 已创建，PR 描述包含验证结果与隐私声明。
+- GitHub Fork、目标分支和草稿 PR 已创建，PR 描述包含验证结果与隐私声明。
+
