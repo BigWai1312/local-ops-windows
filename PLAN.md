@@ -1,5 +1,7 @@
 # 本地运维台 Windows 执行与发布计划
 
+> 当前状态：已完成 Windows-only 二开、隐私审计、发行包校验，并发布到公开 Fork `BigWai1312/local-ops-windows` 的草稿 PR #1。
+
 ## 1. 目标与边界
 
 - 本地目录：`local-ops-windows/`
