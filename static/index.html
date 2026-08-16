@@ -4,8 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<title>总控台｜本地服务与批处理启动监测</title>
-<meta name="description" content="macOS 本地服务与批处理任务的快速启动、运行监测工具">
+<title>本地运维台 Windows｜本地服务与批处理启动监测</title>
+<meta name="description" content="Windows 10/11 本地服务与批处理任务的快速启动、运行监测工具">
 <link rel="icon" href="/assets/favicon-32.png" type="image/png" sizes="32x32">
 <link rel="icon" href="/assets/favicon.ico" sizes="any">
 <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png" sizes="180x180">
@@ -62,7 +62,7 @@
         <div class="side-brand">
           <span class="brand-icon" aria-hidden="true"><img src="/assets/brand-mark.png" alt=""></span>
           <div class="brand-text">
-            <h1>总控台</h1>
+            <h1>本地运维台 Windows</h1>
             <p>本地服务监控 · 快速启动</p>
           </div>
         </div>
@@ -83,12 +83,12 @@
         <div class="topbar-right">
           <div class="side-stats mono" id="sideStats">—</div>
           <div class="side-controls">
-            <button class="console-control" id="restartConsoleBtn" type="button" title="重启总控台" aria-label="重启总控台">
+            <button class="console-control" id="restartConsoleBtn" type="button" title="重启本地运维台 Windows" aria-label="重启本地运维台 Windows">
               <span id="restartConsoleIcon" aria-hidden="true"></span>
               <span class="console-action-label" id="restartConsoleLabel">重启</span>
               <span class="console-port" id="consolePortLabel">:----</span>
             </button>
-            <button class="console-control danger" id="stopConsoleBtn" type="button" title="停止总控台" aria-label="停止总控台">
+            <button class="console-control danger" id="stopConsoleBtn" type="button" title="停止本地运维台 Windows" aria-label="停止本地运维台 Windows">
               <span id="stopConsoleIcon" aria-hidden="true"></span>
               <span class="console-action-label" id="stopConsoleLabel">停止</span>
             </button>
@@ -115,7 +115,7 @@
               <button class="cmdk-trigger" id="cmdkTrigger" type="button" aria-label="打开命令面板">
                 <span class="cmdk-ic" id="cmdkIcon" aria-hidden="true"></span>
                 <span class="cmdk-placeholder">搜索服务、端口、命令或输入操作…</span>
-                <kbd>⌘K</kbd>
+                <kbd>Ctrl+K</kbd>
               </button>
               <div class="quick-actions" id="quickActions">
                 <button class="qa-chip" type="button" data-qa="add-svc"><span class="qa-ic" data-qa-icon="plus" aria-hidden="true"></span>添加服务</button>
@@ -368,7 +368,7 @@
             <section class="widget" aria-labelledby="quickTitle">
               <div class="widget-head"><h3 id="quickTitle">快捷操作</h3></div>
               <div class="quick-list">
-                <button class="quick-item" type="button" data-qa="logs"><span class="qa-ic" data-qa-icon="file-text" aria-hidden="true"></span>打开日志中心<kbd>⌘J</kbd></button>
+                <button class="quick-item" type="button" data-qa="logs"><span class="qa-ic" data-qa-icon="file-text" aria-hidden="true"></span>打开日志中心<kbd>Ctrl+J</kbd></button>
                 <button class="quick-item" type="button" data-qa="batch-stop"><span class="qa-ic" data-qa-icon="power" aria-hidden="true"></span>批量停止服务</button>
                 <button class="quick-item" type="button" data-qa="refresh"><span class="qa-ic" data-qa-icon="refresh-cw" aria-hidden="true"></span>刷新所有状态</button>
               </div>
@@ -495,7 +495,7 @@
               <button class="btn" id="btnPickIcon" type="button">上传图片</button>
               <button class="btn" id="btnRemoveIcon" type="button" hidden>清除</button>
             </div>
-            <p class="hint">png / jpg / webp，也可直接 ⌘V 粘贴剪贴板图片；未选择时显示名称首字</p>
+            <p class="hint">png / jpg / webp，也可直接 Ctrl+V 粘贴剪贴板图片；未选择时显示名称首字</p>
           </div>
         </div>
         <input type="file" id="iconFile" accept="image/png,image/jpeg,image/webp" hidden>
@@ -606,7 +606,7 @@
       <div class="set-info"><span>版本</span><span class="mono" id="setVersion">—</span></div>
       <div class="set-info"><span>端口</span><span class="mono" id="setPort">—</span></div>
       <div class="set-info"><span>工作目录</span><span class="mono set-path" id="setCwd">—</span></div>
-      <div class="set-info"><span>数据目录</span><span class="mono set-path">~/Library/Application Support/总控台</span></div>
+      <div class="set-info"><span>数据目录</span><span class="mono set-path">%APPDATA%\LocalOpsWindows</span></div>
     </div>
     <div class="modal-actions">
       <button class="btn" id="settingsMaskClose" type="button">关闭</button>

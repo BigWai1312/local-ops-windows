@@ -26,6 +26,9 @@ function findSvc(key) {
     .find(s => serviceKey(s) === key);
 }
 function findWatch(key) { return ((state.data && state.data.watched) || []).find(w => String(w.pid) === key); }
+function capability(name) {
+  return !!(state.data && state.data.capabilities && state.data.capabilities[name]);
+}
 
 /* ---------------- 本页会话内的新端口发现 ----------------
    seenKeys 故意不写入 localStorage：刷新页面后以当时的真实监听状态重新建立
@@ -137,8 +140,10 @@ function openServiceAppModal(s) {
     command: s.cmd || '',
     cwd: s.cwd || null,
     port: s.port != null ? s.port : null,
-    attachPid: s.pid,
-    attachInstanceKey: s.instanceKey || null,
+    ...(capability('externalAttach') ? {
+      attachPid: s.pid,
+      attachInstanceKey: s.instanceKey || null,
+    } : {}),
   });
 }
 
@@ -385,6 +390,7 @@ function updateServiceRow(row, svc) {
   label('结束进程', r.kill);
   label('移到我的服务', r.promote);
   label('取消隐藏', r.unhide);
+  if (r.kill) r.kill.hidden = !capability('externalKill');
 }
 
 function createDiscoveryRow() {
@@ -447,7 +453,7 @@ function updateDiscoveryRow(row, svc) {
   setText(r.detail, detail ? truncateMiddle(shortHome(detail), 72) : '未能读取工作目录');
   r.detail.title = detail;
   row.classList.remove('is-offline');
-  r.add.textContent = '加入启动台';
+  r.add.textContent = capability('externalAttach') ? '加入启动台' : '添加启动配置';
   r.add.setAttribute('aria-label', '将 ' + title + ' 加入启动台');
   r.ignore.setAttribute('aria-label', '忽略并隐藏 ' + title + ' 的端口 ' + svc.port);
   r.dismiss.setAttribute('aria-label', '暂时关闭 ' + title + ' 的新端口提醒');
@@ -503,6 +509,7 @@ function updateWatchRow(row, w) {
   const target = w.name || ('PID ' + w.pid);
   r.kill.title = '结束进程：' + target;
   r.kill.setAttribute('aria-label', '结束进程：' + target);
+  r.kill.hidden = !capability('externalKill');
 }
 
 function createChip(kw) {

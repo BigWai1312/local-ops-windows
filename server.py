@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""总控台后端（单文件，仅 Python 3 标准库）。
+"""本地运维台 Windows 后端（仅 Python 3 标准库）。
 
 本地服务监控 + 快速启动台：
-    python3 server.py  →  绑定 127.0.0.1，端口 9600 起（被占 +1，最多 10 个）
+    py -3 server.py  →  绑定 127.0.0.1，端口 9600 起（被占 +1，最多 10 个）
 API 契约与实现要点见 AGENTS.md。
 """
 
 import glob
-import fcntl
 import functools
 import errno
 import json
@@ -19,6 +18,7 @@ import secrets
 import shlex
 import shutil
 import signal
+import socket
 import stat
 import subprocess
 import sys
@@ -31,12 +31,157 @@ import webbrowser
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+try:
+    import fcntl  # POSIX 专属：Windows 上不存在，实例锁改用 msvcrt
+except ImportError:  # pragma: no cover - Windows
+    fcntl = None
+
+if sys.platform == "win32":
+    import ctypes
+    from ctypes import wintypes
+
+    class _PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.c_size_t),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", wintypes.LONG),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", wintypes.WCHAR * 260),
+        ]
+
+    class _FILETIME(ctypes.Structure):
+        _fields_ = [
+            ("dwLowDateTime", wintypes.DWORD),
+            ("dwHighDateTime", wintypes.DWORD),
+        ]
+
+    class _PROCESS_MEMORY_COUNTERS(ctypes.Structure):
+        _fields_ = [
+            ("cb", wintypes.DWORD),
+            ("PageFaultCount", wintypes.DWORD),
+            ("PeakWorkingSetSize", ctypes.c_size_t),
+            ("WorkingSetSize", ctypes.c_size_t),
+            ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+            ("PagefileUsage", ctypes.c_size_t),
+            ("PeakPagefileUsage", ctypes.c_size_t),
+        ]
+
+    class _MEMORYSTATUSEX(ctypes.Structure):
+        _fields_ = [
+            ("dwLength", wintypes.DWORD),
+            ("dwMemoryLoad", wintypes.DWORD),
+            ("ullTotalPhys", ctypes.c_ulonglong),
+            ("ullAvailPhys", ctypes.c_ulonglong),
+            ("ullTotalPageFile", ctypes.c_ulonglong),
+            ("ullAvailPageFile", ctypes.c_ulonglong),
+            ("ullTotalVirtual", ctypes.c_ulonglong),
+            ("ullAvailVirtual", ctypes.c_ulonglong),
+            ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+        ]
+
+    class _UNICODE_STRING(ctypes.Structure):
+        _fields_ = [
+            ("Length", wintypes.USHORT),
+            ("MaximumLength", wintypes.USHORT),
+            ("Buffer", wintypes.LPWSTR),
+        ]
+
+    class _SID_AND_ATTRIBUTES(ctypes.Structure):
+        _fields_ = [
+            ("Sid", wintypes.LPVOID),
+            ("Attributes", wintypes.DWORD),
+        ]
+
+    class _TOKEN_USER(ctypes.Structure):
+        _fields_ = [("User", _SID_AND_ATTRIBUTES)]
+
+    _KERNEL32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _NTDLL = ctypes.WinDLL("ntdll", use_last_error=True)
+    _PSAPI = ctypes.WinDLL("psapi", use_last_error=True)
+    _ADVAPI32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    _KERNEL32.OpenProcess.restype = wintypes.HANDLE
+    _KERNEL32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL,
+                                      wintypes.DWORD]
+    _KERNEL32.ReadProcessMemory.restype = wintypes.BOOL
+    _KERNEL32.ReadProcessMemory.argtypes = [
+        wintypes.HANDLE, wintypes.LPCVOID, wintypes.LPVOID,
+        ctypes.c_size_t, ctypes.c_void_p]
+    _KERNEL32.CloseHandle.argtypes = [wintypes.HANDLE]
+    _KERNEL32.GetExitCodeProcess.restype = wintypes.BOOL
+    _KERNEL32.GetExitCodeProcess.argtypes = [wintypes.HANDLE,
+                                             ctypes.POINTER(wintypes.DWORD)]
+    _KERNEL32.TerminateProcess.restype = wintypes.BOOL
+    _KERNEL32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    _KERNEL32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    _KERNEL32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    _KERNEL32.Process32FirstW.restype = wintypes.BOOL
+    _KERNEL32.Process32FirstW.argtypes = [
+        wintypes.HANDLE, ctypes.POINTER(_PROCESSENTRY32W)]
+    _KERNEL32.Process32NextW.restype = wintypes.BOOL
+    _KERNEL32.Process32NextW.argtypes = [
+        wintypes.HANDLE, ctypes.POINTER(_PROCESSENTRY32W)]
+    _KERNEL32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    _KERNEL32.QueryFullProcessImageNameW.argtypes = [
+        wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
+        ctypes.POINTER(wintypes.DWORD)]
+    _KERNEL32.GetProcessTimes.restype = wintypes.BOOL
+    _KERNEL32.GetProcessTimes.argtypes = [
+        wintypes.HANDLE, ctypes.POINTER(_FILETIME), ctypes.POINTER(_FILETIME),
+        ctypes.POINTER(_FILETIME), ctypes.POINTER(_FILETIME)]
+    _KERNEL32.GlobalMemoryStatusEx.restype = wintypes.BOOL
+    _KERNEL32.GlobalMemoryStatusEx.argtypes = [ctypes.POINTER(_MEMORYSTATUSEX)]
+    _KERNEL32.LocalFree.restype = wintypes.HLOCAL
+    _KERNEL32.LocalFree.argtypes = [wintypes.HLOCAL]
+    _PSAPI.GetProcessMemoryInfo.restype = wintypes.BOOL
+    _PSAPI.GetProcessMemoryInfo.argtypes = [
+        wintypes.HANDLE, ctypes.POINTER(_PROCESS_MEMORY_COUNTERS), wintypes.DWORD]
+    _ADVAPI32.OpenProcessToken.restype = wintypes.BOOL
+    _ADVAPI32.OpenProcessToken.argtypes = [
+        wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+    _ADVAPI32.GetTokenInformation.restype = wintypes.BOOL
+    _ADVAPI32.GetTokenInformation.argtypes = [
+        wintypes.HANDLE, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD)]
+    _ADVAPI32.ConvertSidToStringSidW.restype = wintypes.BOOL
+    _ADVAPI32.ConvertSidToStringSidW.argtypes = [
+        wintypes.LPVOID, ctypes.POINTER(wintypes.LPWSTR)]
+    _NTDLL.NtQueryInformationProcess.restype = wintypes.LONG
+    _NTDLL.NtQueryInformationProcess.argtypes = [
+        wintypes.HANDLE, wintypes.ULONG, wintypes.LPVOID,
+        wintypes.ULONG, ctypes.c_void_p]
+else:  # pragma: no cover - macOS
+    ctypes = None
+    wintypes = None
+    _KERNEL32 = None
+    _NTDLL = None
+    _PSAPI = None
+    _ADVAPI32 = None
+
+IS_WIN = sys.platform == "win32"
+IS_MAC = sys.platform == "darwin"
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PRODUCT_NAME = "本地运维台 Windows"
+PRODUCT_ID = "LocalOpsWindows"
 VERSION_PATH = os.path.join(BASE_DIR, "VERSION")
 LEGACY_DATA_DIR = os.path.join(BASE_DIR, "data")
-DEFAULT_DATA_DIR = os.path.expanduser(
-    "~/Library/Application Support/总控台")
-DEFAULT_LOGS_DIR = os.path.expanduser("~/Library/Logs/总控台")
+if IS_WIN:
+    _appdata = os.environ.get("APPDATA") or os.path.expanduser("~")
+    _localappdata = os.environ.get("LOCALAPPDATA") or _appdata
+    DEFAULT_DATA_DIR = os.path.join(_appdata, PRODUCT_ID)
+    DEFAULT_LOGS_DIR = os.path.join(_localappdata, PRODUCT_ID, "logs")
+else:
+    DEFAULT_DATA_DIR = os.path.expanduser(
+        "~/Library/Application Support/总控台")
+    DEFAULT_LOGS_DIR = os.path.expanduser("~/Library/Logs/总控台")
 
 
 def resolve_runtime_dir(name, default):
@@ -106,12 +251,13 @@ RUN_TOKEN_ARG_PREFIX = "console-run:"
 TASK_CANCELED_EXIT_CODE = 130
 
 SELF_PID = os.getpid()
-SELF_UID = os.getuid()
+SELF_UID = os.getuid() if hasattr(os, "getuid") else 0
 ICON_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".ico")
 LOG = logging.getLogger("console")
 LOG_LOCK = threading.RLock()
 MANUAL_STOP_LOCK = threading.RLock()
 MANUAL_STOP_TOKENS = set()
+APP_WATCH_THREADS = {}
 
 
 def classify_task_exit(code):
@@ -156,7 +302,7 @@ STATIC_TYPES = {
 }
 
 PLACEHOLDER_HTML = """<!DOCTYPE html>
-<html lang="zh-CN"><head><meta charset="utf-8"><title>总控台</title>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>本地运维台 Windows</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
 body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#f5f5f7;color:#1d1d1f}
@@ -165,7 +311,7 @@ h1{font-size:20px;margin:0 0 14px}p{color:#6e6e73;font-size:14px;line-height:1.8
 code{background:#f5f5f7;border:1px solid rgba(0,0,0,.05);border-radius:6px;padding:2px 7px;font-family:ui-monospace,Menlo,monospace;font-size:13px}
 </style></head>
 <body><div class="card">
-<h1>🖥 总控台后端运行中</h1>
+<h1>本地运维台 Windows 后端运行中</h1>
 <p>前端文件 <code>static/index.html</code> 尚未提供，界面暂不可用。</p>
 <p>API 已就绪：<code>GET /api/state</code></p>
 </div></body></html>"""
@@ -535,6 +681,32 @@ class Config:
         os.chmod(path, 0o600)
 
 
+def _lock_exclusive(lock_file):
+    """非阻塞独占锁：POSIX flock / Windows msvcrt.locking。"""
+    if fcntl is not None:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return
+    import msvcrt
+    # msvcrt.locking 需要文件里已有内容才能锁字节区间
+    if os.fstat(lock_file.fileno()).st_size == 0:
+        lock_file.write("\0")
+        lock_file.flush()
+    lock_file.seek(0)
+    msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+
+
+def _unlock(lock_file):
+    if fcntl is not None:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        return
+    import msvcrt
+    try:
+        lock_file.seek(0)
+        msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+    except OSError:
+        pass
+
+
 def acquire_instance_lock(path=INSTANCE_LOCK_PATH):
     """Acquire the per-project process lock and keep its file object alive.
 
@@ -547,21 +719,22 @@ def acquire_instance_lock(path=INSTANCE_LOCK_PATH):
     fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
     lock_file = os.fdopen(fd, "r+", encoding="ascii")
     try:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _lock_exclusive(lock_file)
     except OSError as e:
         lock_file.close()
         if e.errno in (errno.EACCES, errno.EAGAIN):
             return None
         raise
     try:
-        os.fchmod(lock_file.fileno(), 0o600)
+        if hasattr(os, "fchmod"):
+            os.fchmod(lock_file.fileno(), 0o600)
         lock_file.seek(0)
         lock_file.truncate()
         lock_file.write("%d\n" % SELF_PID)
         lock_file.flush()
         os.fsync(lock_file.fileno())
     except OSError:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        _unlock(lock_file)
         lock_file.close()
         raise
     return lock_file
@@ -571,7 +744,7 @@ def release_instance_lock(lock_file):
     if lock_file is None:
         return
     try:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        _unlock(lock_file)
     finally:
         lock_file.close()
 
@@ -587,6 +760,440 @@ def run_cmd(args, timeout=SUBPROCESS_TIMEOUT):
     except Exception:
         LOG.exception("命令执行失败: %r", args)
         return ""
+
+
+# ---------------------------------------------------------------- Windows 适配层
+# Windows 没有 ps/lsof/osascript/进程组/uid。以下函数用标准库和 Win32 API
+# 提供同签名实现，让上层业务逻辑保持一致。
+
+
+def _win_powershell(script, timeout=SUBPROCESS_TIMEOUT):
+    """运行 PowerShell 并返回 stdout；失败返回空串。
+
+    显式把控制台输出编码切到 UTF-8：PowerShell 重定向输出默认用
+    系统 OEM 代码页（中文系统 GBK），与 Python 的 locale 编码不一致时
+    中文命令会乱码甚至破坏 JSON。
+    """
+    try:
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive",
+             "-ExecutionPolicy", "Bypass", "-Command",
+             "[Console]::OutputEncoding=[Text.Encoding]::UTF8; " + script],
+            capture_output=True, timeout=timeout)
+        return r.stdout.decode("utf-8", errors="replace") or ""
+    except Exception:
+        LOG.exception("PowerShell 执行失败")
+        return ""
+
+
+def _win_quote(value):
+    """cmd.exe 安全引用：双引号包裹，内部引号按 MSVC 规则加倍。"""
+    return '"%s"' % str(value).replace('"', '""')
+
+
+def _parse_win_process_table_json(text):
+    """CIM ConvertTo-Json 文本 → {pid: {ppid, args, name, exe, created, ws}}。"""
+    if not text or not text.strip():
+        return {}
+    try:
+        items = json.loads(text)
+    except ValueError:
+        return {}
+    if isinstance(items, dict):
+        items = [items]
+    if not isinstance(items, list):
+        return {}
+    table = {}
+    for item in items:
+        try:
+            pid = int(item.get("ProcessId") or 0)
+        except (TypeError, ValueError):
+            continue
+        if pid <= 0:
+            continue
+        table[pid] = {
+            "ppid": item.get("ParentProcessId"),
+            "name": item.get("Name") or "",
+            "exe": item.get("ExecutablePath") or "",
+            "args": item.get("CommandLine") or "",
+            "created": item.get("CreationDate") or "",
+            "ws": item.get("WorkingSetSize"),
+        }
+    return table
+
+
+def _win_query_image(handle):
+    size = wintypes.DWORD(32768)
+    buffer = ctypes.create_unicode_buffer(size.value)
+    if not _KERNEL32.QueryFullProcessImageNameW(
+            handle, 0, buffer, ctypes.byref(size)):
+        return ""
+    return buffer.value
+
+
+def _win_query_command_line(handle):
+    """通过 NtQueryInformationProcess 读取命令行；访问受限时返回空串。"""
+    size = wintypes.ULONG(0)
+    _NTDLL.NtQueryInformationProcess(handle, 60, None, 0, ctypes.byref(size))
+    if size.value <= ctypes.sizeof(_UNICODE_STRING) or size.value > 1024 * 1024:
+        return ""
+    buffer = ctypes.create_string_buffer(size.value)
+    status = _NTDLL.NtQueryInformationProcess(
+        handle, 60, buffer, size.value, ctypes.byref(size))
+    if status != 0:
+        return ""
+    value = _UNICODE_STRING.from_buffer(buffer)
+    if not value.Buffer or value.Length <= 0:
+        return ""
+    return ctypes.wstring_at(value.Buffer, value.Length // 2)
+
+
+def _win_query_creation_time(handle):
+    created = _FILETIME()
+    exited = _FILETIME()
+    kernel = _FILETIME()
+    user = _FILETIME()
+    if not _KERNEL32.GetProcessTimes(
+            handle, ctypes.byref(created), ctypes.byref(exited),
+            ctypes.byref(kernel), ctypes.byref(user)):
+        return None
+    ticks = (int(created.dwHighDateTime) << 32) | int(created.dwLowDateTime)
+    if ticks <= _WIN_EPOCH:
+        return None
+    return (ticks - _WIN_EPOCH) / 10_000_000.0
+
+
+def _win_query_working_set(handle):
+    counters = _PROCESS_MEMORY_COUNTERS()
+    counters.cb = ctypes.sizeof(counters)
+    if not _PSAPI.GetProcessMemoryInfo(
+            handle, ctypes.byref(counters), counters.cb):
+        return 0
+    return int(counters.WorkingSetSize)
+
+
+def _win_query_sid(handle):
+    """读取进程令牌用户 SID；访问受限时返回空串。"""
+    token = wintypes.HANDLE()
+    if not _ADVAPI32.OpenProcessToken(handle, 0x0008, ctypes.byref(token)):
+        return ""
+    try:
+        size = wintypes.DWORD(0)
+        _ADVAPI32.GetTokenInformation(token, 1, None, 0, ctypes.byref(size))
+        if size.value <= 0 or size.value > 1024 * 1024:
+            return ""
+        buffer = ctypes.create_string_buffer(size.value)
+        if not _ADVAPI32.GetTokenInformation(
+                token, 1, buffer, size.value, ctypes.byref(size)):
+            return ""
+        user = _TOKEN_USER.from_buffer(buffer)
+        string_sid = wintypes.LPWSTR()
+        if not _ADVAPI32.ConvertSidToStringSidW(
+                user.User.Sid, ctypes.byref(string_sid)):
+            return ""
+        try:
+            return string_sid.value or ""
+        finally:
+            _KERNEL32.LocalFree(ctypes.cast(string_sid, wintypes.HLOCAL))
+    finally:
+        _KERNEL32.CloseHandle(token)
+
+
+def _win_process_table():
+    """纯 Win32 进程快照，不依赖 CIM、WMI、PowerShell 或管理员权限。"""
+    if not IS_WIN:  # pragma: no cover - Windows 专属
+        return {}
+    snapshot = _KERNEL32.CreateToolhelp32Snapshot(0x00000002, 0)
+    invalid_handle = ctypes.c_void_p(-1).value
+    if not snapshot or snapshot == invalid_handle:
+        LOG.error("CreateToolhelp32Snapshot 失败: WinError %d", ctypes.get_last_error())
+        return {}
+    table = {}
+    try:
+        entry = _PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(entry)
+        more = _KERNEL32.Process32FirstW(snapshot, ctypes.byref(entry))
+        while more:
+            pid = int(entry.th32ProcessID)
+            if pid > 0:
+                info = {
+                    "ppid": int(entry.th32ParentProcessID),
+                    "name": entry.szExeFile or "",
+                    "exe": "",
+                    "args": "",
+                    "created": None,
+                    "ws": 0,
+                    "sid": "",
+                }
+                handle = _KERNEL32.OpenProcess(0x0410, False, pid)
+                if not handle:
+                    handle = _KERNEL32.OpenProcess(0x1000, False, pid)
+                if handle:
+                    try:
+                        info["exe"] = _win_query_image(handle)
+                        info["args"] = _win_query_command_line(handle)
+                        info["created"] = _win_query_creation_time(handle)
+                        info["ws"] = _win_query_working_set(handle)
+                        info["sid"] = _win_query_sid(handle)
+                    finally:
+                        _KERNEL32.CloseHandle(handle)
+                if not info["args"]:
+                    info["args"] = info["exe"] or info["name"]
+                table[pid] = info
+            more = _KERNEL32.Process32NextW(snapshot, ctypes.byref(entry))
+    finally:
+        _KERNEL32.CloseHandle(snapshot)
+    return table
+
+
+_WIN_TOTAL_MEM_CACHE = {"mono": 0.0, "kb": 0.0}
+_WIN_SELF_SID = None
+
+
+def _win_current_user_sid():
+    global _WIN_SELF_SID
+    if _WIN_SELF_SID is not None:
+        return _WIN_SELF_SID
+    handle = _KERNEL32.OpenProcess(0x1000, False, SELF_PID)
+    if not handle:
+        _WIN_SELF_SID = ""
+        return _WIN_SELF_SID
+    try:
+        _WIN_SELF_SID = _win_query_sid(handle)
+    finally:
+        _KERNEL32.CloseHandle(handle)
+    return _WIN_SELF_SID
+
+
+def _win_total_memory_kb():
+    """GlobalMemoryStatusEx 获取总物理内存（KB），10 秒缓存。"""
+    now = time.monotonic()
+    if now - _WIN_TOTAL_MEM_CACHE["mono"] < 10.0:
+        return _WIN_TOTAL_MEM_CACHE["kb"]
+    status = _MEMORYSTATUSEX()
+    status.dwLength = ctypes.sizeof(status)
+    kb = (float(status.ullTotalPhys) / 1024.0
+          if _KERNEL32.GlobalMemoryStatusEx(ctypes.byref(status)) else 0.0)
+    _WIN_TOTAL_MEM_CACHE["mono"] = now
+    _WIN_TOTAL_MEM_CACHE["kb"] = kb
+    return kb
+
+
+_WIN_EPOCH = 116444736000000000  # 1601-01-01 → 1970-01-01（100ns 单位）
+
+
+def _win_parse_creation(created):
+    """CIM CreationDate → 创建时间戳秒；兼容 ISO/DMTF/PowerShell 5.1。"""
+    if not created:
+        return None
+    if isinstance(created, (int, float)):
+        return float(created) if created > 0 else None
+    text = str(created)
+    try:
+        dotnet = re.fullmatch(r"/Date\((-?\d+)(?:[+-]\d{4})?\)/", text)
+        if dotnet:
+            return int(dotnet.group(1)) / 1000.0
+        if text.endswith("+000") or "T" in text:
+            from datetime import datetime
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            return parsed.timestamp()
+        m = re.fullmatch(r"(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(?:\..*)?",
+                         text)
+        if m:
+            from datetime import datetime
+            return datetime(*[int(g) for g in m.groups()[:6]]).timestamp()
+    except (TypeError, ValueError, OverflowError):
+        pass
+    return None
+
+
+def _win_etime(created):
+    created_ts = _win_parse_creation(created)
+    if created_ts is None:
+        return 0
+    return max(0, int(time.time() - created_ts))
+
+
+def _win_tree_of(root_pid, table):
+    """root 及其全部存活后代（按 PPID 链，含孤儿：Windows 子进程在父进程
+    退出后仍保留原 PPID）。返回有序列表。带 visited 防环——Windows 上
+    存在循环 PPID 的异常进程。"""
+    children = {}
+    for pid, info in table.items():
+        ppid = info.get("ppid")
+        if isinstance(ppid, int) and ppid > 0:
+            children.setdefault(ppid, []).append(pid)
+    result = []
+    stack = [root_pid]
+    seen = set()
+    while stack:
+        current = stack.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        if current != root_pid:
+            result.append(current)
+        stack.extend(children.get(current, []))
+    return [root_pid] + sorted(result)
+
+
+def _win_cwd(pid):
+    """读取同架构进程的工作目录（PEB）；失败返回 None。
+
+    通过 NtQueryInformationProcess 取 PEB 基址，再读
+    RTL_USER_PROCESS_PARAMETERS.CurrentDirectory。只读、无副作用；
+    任何一步失败都静默返回 None。
+    """
+    if not IS_WIN:  # pragma: no cover - 仅 Windows 执行
+        return None
+    PROCESS_QUERY_INFORMATION = 0x0400
+    PROCESS_VM_READ = 0x0010
+    handle = _KERNEL32.OpenProcess(
+        PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, False, int(pid))
+    if not handle:
+        return None
+    try:
+        is_64 = ctypes.sizeof(ctypes.c_void_p) == 8
+        buf = ctypes.create_string_buffer(48)
+        status = _NTDLL.NtQueryInformationProcess(
+            handle, 0, buf, 48, None)
+        if status != 0:
+            return None
+        if is_64:
+            peb_addr = int.from_bytes(buf.raw[8:16], "little")
+            params_offset = 0x20
+            cwd_offset = 0x38
+        else:
+            peb_addr = int.from_bytes(buf.raw[4:8], "little")
+            params_offset = 0x10
+            cwd_offset = 0x24
+        if not peb_addr:
+            return None
+        peb = ctypes.create_string_buffer(64)
+        if not _KERNEL32.ReadProcessMemory(handle, peb_addr, peb, 64, None):
+            return None
+        params_addr = int.from_bytes(
+            peb.raw[params_offset:params_offset + 8], "little")
+        if not params_addr:
+            return None
+        params = ctypes.create_string_buffer(128)
+        if not _KERNEL32.ReadProcessMemory(
+                handle, params_addr, params, 128, None):
+            return None
+        length = int.from_bytes(params.raw[cwd_offset:cwd_offset + 2], "little")
+        if length <= 0 or length > 1024:
+            return None
+        buffer_addr = int.from_bytes(
+            params.raw[cwd_offset + 8:cwd_offset + 16], "little")
+        if not buffer_addr:
+            return None
+        raw = ctypes.create_string_buffer(length)
+        if not _KERNEL32.ReadProcessMemory(handle, buffer_addr, raw, length, None):
+            return None
+        return raw.raw.decode("utf-16-le", errors="replace").rstrip("\x00\\")
+    finally:
+        _KERNEL32.CloseHandle(handle)
+
+
+def _win_terminate_process(pid, exit_code=1):
+    """终止一个已经过上层所有权校验的进程。"""
+    handle = _KERNEL32.OpenProcess(0x0001, False, int(pid))  # PROCESS_TERMINATE
+    if not handle:
+        if not pid_alive(pid):
+            return True, None
+        return False, "无法打开受控进程 PID %d（WinError %d）" % (
+            pid, ctypes.get_last_error())
+    try:
+        if _KERNEL32.TerminateProcess(handle, int(exit_code)):
+            return True, None
+        if not pid_alive(pid):
+            return True, None
+        return False, "无法终止受控进程 PID %d（WinError %d）" % (
+            pid, ctypes.get_last_error())
+    finally:
+        _KERNEL32.CloseHandle(handle)
+
+
+def _win_terminate_members(root_pid, members):
+    """终止已验证锚点的当前用户后代，覆盖启动/停止并发产生的新子进程。"""
+    root_pid = int(root_pid)
+    known = {root_pid}
+    for pid in members or []:
+        try:
+            pid = int(pid)
+        except (TypeError, ValueError):
+            continue
+        if pid > 0:
+            known.add(pid)
+
+    self_sid = _win_current_user_sid()
+    last_table = {}
+
+    def discover(table):
+        """沿已验证成员的 PPID 继续吸收同用户后代，包括父进程已退出的孤儿。"""
+        if not self_sid:
+            return
+        changed = True
+        while changed:
+            changed = False
+            for pid, info in table.items():
+                if (pid <= 0 or pid in known
+                        or info.get("sid") != self_sid
+                        or info.get("ppid") not in known):
+                    continue
+                known.add(pid)
+                changed = True
+
+    # 锚点刚启动就收到停止请求时，cmd/用户命令可能仍在创建。先给进程树
+    # 一个很短的稳定窗口，再开始叶子优先终止，避免只杀到锚点。
+    for _ in range(5):
+        last_table = _win_process_table()
+        discover(last_table)
+        time.sleep(0.05)
+
+    failures = []
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline:
+        last_table = _win_process_table()
+        discover(last_table)
+        live = [pid for pid in known if pid_alive(pid)]
+        if not live:
+            return True, None
+
+        def depth(pid):
+            value = 0
+            seen = set()
+            while pid != root_pid and pid not in seen:
+                seen.add(pid)
+                parent = (last_table.get(pid) or {}).get("ppid")
+                if not isinstance(parent, int) or parent <= 0:
+                    break
+                value += 1
+                pid = parent
+            return value
+
+        # 深层子进程先结束；锚点最后结束。下一轮会再次发现竞态中新建的后代。
+        ordered = sorted(
+            (pid for pid in live if pid != root_pid),
+            key=lambda pid: (depth(pid), pid), reverse=True)
+        if root_pid in live:
+            ordered.append(root_pid)
+        for pid in ordered:
+            ok, error = _win_terminate_process(pid)
+            if not ok and pid_alive(pid):
+                failures.append(error or "PID %d 终止失败" % pid)
+        time.sleep(0.05)
+    remaining = [pid for pid in known if pid_alive(pid)]
+    if remaining:
+        detail = failures[0] if failures else "进程未退出"
+        return False, "%s（PID %s）" % (
+            detail, "、".join(str(pid) for pid in remaining))
+    return True, None
+
+
+def _win_command_quote_path(path):
+    """命令字符串中的路径引用（cmd /c 场景）。"""
+    return _win_quote(os.path.normpath(os.path.expanduser(str(path))))
 
 
 def parse_etime(s):
@@ -617,11 +1224,13 @@ def _to_float(tok, default=0.0):
 
 
 def scan_listeners():
-    """lsof 监听快照 → {(pid, port): {bind_host, ...}}。
+    """监听快照 → {(pid, port): {bind_host, ...}}。
 
     字典仍可像旧集合一样迭代/判断 ``(pid, port)``，同时保留监听地址，
     供前端区分仅监听 ``::1`` 的服务（需通过 localhost 打开）。
     """
+    if IS_WIN:
+        return _scan_listeners_windows()
     out = run_cmd(["lsof", "-iTCP", "-sTCP:LISTEN", "-P", "-n"])
     found = {}
     for line in out.splitlines():
@@ -648,6 +1257,116 @@ def scan_listeners():
         if port is None:
             continue
         found.setdefault((pid, port), set()).add(bind_host or "")
+    return found
+
+
+def _parse_netstat_output(text):
+    """netstat -ano -p tcp 文本 → {(pid, port): {bind_host}}。"""
+    found = {}
+    for line in text.splitlines():
+        toks = line.split()
+        if len(toks) < 5 or toks[0].upper() != "TCP":
+            continue
+        if toks[3].upper() != "LISTENING":
+            continue
+        local = toks[1]
+        try:
+            pid = int(toks[4])
+        except ValueError:
+            continue
+        # 本地地址形如 127.0.0.1:8080 / [::1]:8765 / 0.0.0.0:9600
+        host, sep, port_text = local.rpartition(":")
+        if not sep:
+            continue
+        try:
+            port = int(port_text)
+        except ValueError:
+            continue
+        if host.startswith("[") and host.endswith("]"):
+            host = host[1:-1]
+        found.setdefault((pid, port), set()).add(host or "")
+    return found
+
+
+def _scan_listeners_windows():
+    """通过 Windows IP Helper API 读取监听端口，失败时回退 netstat。"""
+    try:
+        return _scan_listeners_iphlpapi()
+    except Exception:
+        LOG.exception("IP Helper API 端口扫描失败，回退 netstat")
+        return _parse_netstat_output(run_cmd(["netstat", "-ano", "-p", "tcp"]))
+
+
+def _scan_listeners_iphlpapi():
+    """语言无关、无需管理员权限的 TCP 监听快照。"""
+    if not IS_WIN:
+        return {}
+    import socket
+    import struct
+
+    class Tcp4Row(ctypes.Structure):
+        _fields_ = [
+            ("state", wintypes.DWORD),
+            ("local_addr", wintypes.DWORD),
+            ("local_port", wintypes.DWORD),
+            ("remote_addr", wintypes.DWORD),
+            ("remote_port", wintypes.DWORD),
+            ("pid", wintypes.DWORD),
+        ]
+
+    class Tcp6Row(ctypes.Structure):
+        _fields_ = [
+            ("local_addr", ctypes.c_ubyte * 16),
+            ("local_scope", wintypes.DWORD),
+            ("local_port", wintypes.DWORD),
+            ("remote_addr", ctypes.c_ubyte * 16),
+            ("remote_scope", wintypes.DWORD),
+            ("remote_port", wintypes.DWORD),
+            ("state", wintypes.DWORD),
+            ("pid", wintypes.DWORD),
+        ]
+
+    get_table = ctypes.WinDLL("iphlpapi").GetExtendedTcpTable
+    get_table.argtypes = [
+        wintypes.LPVOID, ctypes.POINTER(wintypes.ULONG), wintypes.BOOL,
+        wintypes.ULONG, wintypes.ULONG, wintypes.ULONG,
+    ]
+    get_table.restype = wintypes.DWORD
+    found = {}
+
+    def read_table(family, row_type, address):
+        size = wintypes.ULONG(0)
+        get_table(None, ctypes.byref(size), False, family, 5, 0)
+        if size.value <= 4:
+            return
+        buffer = ctypes.create_string_buffer(size.value)
+        result = get_table(buffer, ctypes.byref(size), False, family, 5, 0)
+        if result != 0:
+            raise OSError(result, "GetExtendedTcpTable failed")
+        count = int.from_bytes(buffer.raw[:4], "little")
+        offset = 4
+        step = ctypes.sizeof(row_type)
+        for index in range(count):
+            start = offset + index * step
+            row = row_type.from_buffer_copy(buffer.raw[start:start + step])
+            if int(row.state) != 2:  # MIB_TCP_STATE_LISTEN
+                continue
+            port = socket.ntohs(int(row.local_port) & 0xFFFF)
+            pid = int(row.pid)
+            if port <= 0 or pid <= 0:
+                continue
+            found.setdefault((pid, port), set()).add(address(row))
+
+    read_table(
+        socket.AF_INET,
+        Tcp4Row,
+        lambda row: socket.inet_ntoa(struct.pack("<L", int(row.local_addr))),
+    )
+    read_table(
+        socket.AF_INET6,
+        Tcp6Row,
+        lambda row: socket.inet_ntop(socket.AF_INET6, bytes(row.local_addr)),
+    )
     return found
 
 
@@ -682,11 +1401,10 @@ def listener_open_host(listeners, port, pids=None):
 def ps_snapshot(pids=None, with_uid=True):
     """批量进程信息 → {pid: {"uid","comm","args","cpu","mem","etime"}}。
 
-    pids=None 表示全部进程（ps -ax）。解析：左边固定列 pid[/uid]/etime/cpu/mem，
-    其余部分（可含空格）即 comm；args 单独一次 ps 取。
-    注意：不能用 `comm=` 抑制表头——macOS ps 会把空表头列压到 16 字节截断
-    内容；保留表头后解析时跳过表头行即可（首列非数字的行）。
+    pids=None 表示全部进程。macOS 走 ps 两趟解析；Windows 走 Toolhelp/Win32。
     """
+    if IS_WIN:
+        return _ps_snapshot_windows(pids)
     base = ["ps"]
     if pids is None:
         base.append("-ax")
@@ -738,11 +1456,50 @@ def ps_snapshot(pids=None, with_uid=True):
     return snap
 
 
+def _ps_snapshot_windows(pids=None):
+    """Win32 快照 → 与 ps_snapshot 相同结构。
+
+    Windows 无 CPU% 瞬时值（需两次采样），v1 置 0；mem 用 WorkingSet 占比。
+    uid 以当前用户 SID 映射为 0，其他用户或无法读取令牌的进程映射为 -1。
+    """
+    table = _win_process_table()
+    if not table:
+        return {}
+    total_kb = _win_total_memory_kb()
+    self_sid = _win_current_user_sid()
+    result = {}
+    for pid, info in table.items():
+        if pids is not None and pid not in pids:
+            continue
+        ws = info.get("ws")
+        try:
+            ws_bytes = float(ws or 0)
+        except (TypeError, ValueError):
+            ws_bytes = 0.0
+        mem = (ws_bytes / 1024.0 / total_kb * 100.0) if total_kb else 0.0
+        result[pid] = {
+            "uid": 0 if self_sid and info.get("sid") == self_sid else -1,
+            "comm": info.get("exe") or info.get("name") or "",
+            "args": info.get("args") or "",
+            "cpu": 0.0,
+            "mem": round(mem, 2),
+            "etime": _win_etime(info.get("created")),
+        }
+    return result
+
+
 def lsof_cwds(pids):
-    """lsof -a -p <pids> -d cwd -Fn → {pid: cwd}。"""
+    """lsof -a -p <pids> -d cwd -Fn → {pid: cwd}。Windows 走 PEB 读取。"""
     pids = [int(p) for p in pids]
     if not pids:
         return {}
+    if IS_WIN:
+        result = {}
+        for pid in pids:
+            cwd = _win_cwd(pid)
+            if cwd:
+                result[pid] = cwd
+        return result
     out = run_cmd(["lsof", "-a", "-p", ",".join(str(p) for p in pids),
                    "-d", "cwd", "-Fn"])
     result = {}
@@ -758,7 +1515,30 @@ def lsof_cwds(pids):
     return result
 
 
+def _win_pid_alive(pid):
+    """进程存活检查：OpenProcess + GetExitCodeProcess。
+
+    Windows 上 os.kill(pid, 0) 对已退出进程仍会成功返回（CPython 实现
+    用 TerminateProcess/GetExitCodeProcess，对死进程句柄不报错）；而
+    OpenProcess 单独用也不可靠——监控/杀软可能持有已退出进程的句柄，
+    让进程对象残留。因此必须同时校验退出码不是 STILL_ACTIVE(259)。
+    """
+    h = _KERNEL32.OpenProcess(0x1000, False, int(pid))
+    # PROCESS_QUERY_LIMITED_INFORMATION
+    if not h:
+        return False
+    try:
+        code = wintypes.DWORD()
+        if not _KERNEL32.GetExitCodeProcess(h, ctypes.byref(code)):
+            return False
+        return code.value == 259  # STILL_ACTIVE
+    finally:
+        _KERNEL32.CloseHandle(h)
+
+
 def pid_alive(pid):
+    if IS_WIN:
+        return _win_pid_alive(pid)
     try:
         os.kill(int(pid), 0)
         return True
@@ -771,6 +1551,7 @@ def pid_alive(pid):
 # ---------------------------------------------------------------- 状态构建
 
 SYSTEM_PATH_PREFIXES = ("/usr/libexec/", "/usr/sbin/", "/sbin/", "/System/", "/usr/lib/")
+WIN_SYSTEM_DIR = (os.environ.get("WINDIR") or r"C:\Windows").rstrip("\\") + "\\"
 
 # 开发服务关键词：命中 name/args 时优先归为 "mine"（覆盖 .app 规则，
 # 例如 ollama 守护进程在 Ollama.app 内、Docker 在 Docker.app 内）
@@ -791,6 +1572,10 @@ def classify_group(key, name, comm, args, cwd, promoted):
     if ".app/Contents/" in comm or ".app/Contents/" in args:
         return "background"
     if comm.startswith(SYSTEM_PATH_PREFIXES):
+        return "background"
+    if IS_WIN and (comm.lower().startswith(WIN_SYSTEM_DIR.lower())
+                   or "\\windows\\system32\\" in (comm + " " + args).lower()
+                   or "\\windows\\syswow64\\" in (comm + " " + args).lower()):
         return "background"
     if "/Library/Containers/" in comm or "/Library/Containers/" in (cwd or ""):
         return "background"
@@ -876,6 +1661,14 @@ _ORIGIN_MULTIPLEXERS = {"tmux": "tmux", "screen": "screen"}
 
 def origin_snapshot():
     """ps -axo pid=,ppid=,args → {pid: (ppid, args)}，供来源溯源。"""
+    if IS_WIN:
+        table = {}
+        for pid, info in _win_process_table().items():
+            ppid = info.get("ppid")
+            if not isinstance(ppid, int) or ppid <= 0:
+                ppid = 0
+            table[pid] = (ppid, info.get("args") or "")
+        return table
     table = {}
     for line in run_cmd(["ps", "-axo", "pid=,ppid=,args"]).splitlines():
         toks = line.split(None, 2)
@@ -911,7 +1704,7 @@ def attribute_origin(pid, table):
         if ppid <= 1:
             return candidate or {"label": "系统", "icon": "server"}
         if RUN_TOKEN_ARG_PREFIX in parent_args:
-            return {"label": "总控台", "icon": "rocket"}
+            return {"label": "本地运维台", "icon": "rocket"}
         hay = parent_args.casefold()
         for pattern, label in _ORIGIN_AGENT_PATTERNS:
             if pattern.search(hay):
@@ -1023,7 +1816,16 @@ def build_watched(keywords):
 def pgid_members_map():
     """ps -axo pid=,pgid= → {pgid: [pid, ...]}。
     进程退出后其子孙仍保留原 pgid（被 launchd 收养也不变），
-    因此按 pgid 能找到「脚本把服务放后台后自己退出」的存活成员。"""
+    因此按 pgid 能找到「脚本把服务放后台后自己退出」的存活成员。
+    Windows 无 pgid：以「锚点 PID + PPID 后代」等价建模——子进程在父进程
+    退出后同样保留原 PPID，语义与 macOS 的孤儿进程组一致。
+    """
+    if IS_WIN:
+        table = _win_process_table()
+        groups = {}
+        for pid in table:
+            groups[pid] = _win_tree_of(pid, table)
+        return groups
     groups = {}
     for line in run_cmd(["ps", "-axo", "pid=,pgid="]).splitlines():
         parts = line.split()
@@ -1090,7 +1892,7 @@ def legacy_managed_pid(app, listeners=None, snap=None, cwds=None):
     换 PID，但仍必须在配置端口上按当前 UID + 真实 cwd 唯一命中；因此
     Next/Vite 等重建子进程后不会丢失关联，也不会只凭端口误认其他项目。
     """
-    if app.get("runToken"):
+    if IS_WIN or app.get("runToken"):
         return None
     recorded_pid = app.get("lastPid")
     port = app.get("port")
@@ -1294,6 +2096,13 @@ def build_state(cfg, console_port, config_health=None):
         "consolePort": console_port,
         "consolePid": SELF_PID,
         "consoleCwd": BASE_DIR,
+        "platform": "windows",
+        "productName": PRODUCT_NAME,
+        "capabilities": {
+            "externalAttach": False,
+            "externalKill": False,
+            "managedLifecycle": True,
+        },
         "version": APP_VERSION,
         "schemaVersion": cfg.get("schemaVersion", CURRENT_SCHEMA_VERSION),
         "degraded": bool(degraded_reasons),
@@ -1342,7 +2151,9 @@ def build_health(cfg):
             issues.append("%s 目录不存在" % label)
         elif not os.access(path, os.R_OK | os.W_OK | os.X_OK):
             issues.append("%s 目录不可读写" % label)
-        else:
+        elif not IS_WIN:
+            # Windows 无 POSIX 权限位（文件恒为 0666/0444 风格），
+            # 目录/文件权限由 NTFS ACL 保障，跳过位检查。
             try:
                 mode = os.lstat(path).st_mode
                 if stat.S_ISLNK(mode) or mode & 0o077:
@@ -1360,6 +2171,8 @@ def build_health(cfg):
         except OSError as e:
             issues.append("无法检查 %s: %s" % (label, e))
             continue
+        if IS_WIN:
+            continue
         if not stat.S_ISREG(mode) or mode & 0o077:
             issues.append("%s 文件权限不是 0600" % label)
     degraded = bool(issues)
@@ -1367,6 +2180,8 @@ def build_health(cfg):
     return {
         "ok": not degraded,
         "status": "degraded" if degraded else "ok",
+        "platform": "windows",
+        "productName": PRODUCT_NAME,
         "version": APP_VERSION,
         "schemaVersion": snapshot.get(
             "schemaVersion", CURRENT_SCHEMA_VERSION),
@@ -1410,7 +2225,9 @@ def list_themes():
 # ---------------------------------------------------------------- 进程/应用操作
 
 def process_uid(pid):
-    """返回进程 uid；进程不存在返回 None。"""
+    """返回进程 uid；进程不存在返回 None。Windows 无 uid：存在即视为当前用户。"""
+    if IS_WIN:
+        return 0 if pid_alive(pid) else None
     out = run_cmd(["ps", "-o", "uid=", "-p", str(int(pid))])
     toks = out.split()
     if not toks:
@@ -1423,8 +2240,10 @@ def process_uid(pid):
 
 def kill_process(pid, force):
     """结束单个进程；只允许当前用户的进程。返回 (ok, error)。"""
+    if IS_WIN:
+        return False, "Windows 版不允许结束外部进程；只能停止本程序启动的受控应用"
     if pid == SELF_PID:
-        return False, "不能结束总控台自身进程"
+        return False, "不能结束本地运维台自身进程"
     uid = process_uid(pid)
     if uid is None:
         return False, "进程不存在"
@@ -1449,7 +2268,13 @@ def stop_pid_tree(pid, sig=signal.SIGTERM):
     signal and is therefore an idempotent success. Permission and other OS
     failures must never be swallowed: callers use them to retain management
     identity instead of creating an orphan process.
+    Windows：无 POSIX 信号/进程组，按已验证锚点的当前用户 PPID 后代树
+    调用 TerminateProcess，并在终止期间继续吸收启动竞态中新建的后代。
     """
+    if IS_WIN:
+        table = _win_process_table()
+        members = _win_tree_of(int(pid), table) if int(pid) in table else [int(pid)]
+        return _win_terminate_members(int(pid), members)
     try:
         os.killpg(int(pid), sig)
         return True, None
@@ -1477,6 +2302,10 @@ def build_launch_env(token, environ=None):
     因此显式补入 Homebrew、npm/pnpm、Volta、NVM、fnm 等常见目录。
     """
     env = dict(os.environ if environ is None else environ)
+    if IS_WIN:
+        # Windows 的用户 PATH 本来就包含 npm/node 等安装目录；无需补路径。
+        env[RUN_TOKEN_ENV] = token
+        return env
     home = os.path.expanduser("~")
     preferred = [
         os.path.join(home, ".local", "bin"),
@@ -1512,13 +2341,16 @@ def start_app(app):
     try:
         log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND,
                          0o600)
-        os.fchmod(log_fd, 0o600)
+        if hasattr(os, "fchmod"):
+            os.fchmod(log_fd, 0o600)
         logf = os.fdopen(log_fd, "ab", buffering=0)
     except OSError as e:
         return False, "无法打开日志文件: %s" % e, None, None, None
     token = secrets.token_urlsafe(24)
     env = build_launch_env(token)
     marker = RUN_TOKEN_ARG_PREFIX + token
+    if IS_WIN:
+        return _start_app_windows(app, cwd, logf, env, marker, token)
     # 外层 shell 在 argv[0] 中持有随机标记并等待内层；内层等待用户命令
     # 留下的后台作业。因此进程组既可验证，也不会因启动脚本过早退出而失去锚点。
     outer_script = '/bin/bash -c "$1"\nconsole_status=$?\nexit "$console_status"'
@@ -1531,6 +2363,32 @@ def start_app(app):
             ["/bin/bash", "-c", outer_script, marker, inner_script],
             cwd=cwd, stdout=logf, stderr=subprocess.STDOUT,
             start_new_session=True, env=env)
+    except Exception as e:
+        logf.close()
+        return False, "启动失败: %s" % e, None, None, None
+    logf.close()  # 子进程已持有副本，父进程关闭避免 fd 泄漏
+    return True, None, proc, proc.pid, token
+
+
+def _start_app_windows(app, cwd, logf, env, marker, token):
+    """Windows 启动：python 锚点进程持有 marker，内部以 cmd /c 运行用户命令。
+
+    锚点等整棵进程树清空后才退出（等价于 macOS 外层 bash 的 wait），
+    因此服务/任务完成后的退出码、日志和“仍在运行”判定都能复现。
+    受控身份 = 锚点 PID + marker 命令行 + PPID 后代树。
+    """
+    anchor = os.path.join(BASE_DIR, "tools", "win_anchor.py")
+    if not os.path.isfile(anchor):
+        logf.close()
+        return False, "缺少 tools/win_anchor.py，无法在 Windows 启动应用", None, None, None
+    try:
+        header = "\n===== 启动于 %s =====\n" % time.strftime("%Y-%m-%d %H:%M:%S")
+        logf.write(header.encode("utf-8"))
+        proc = subprocess.Popen(
+            [sys.executable, anchor, marker, app["command"]],
+            cwd=cwd, stdout=logf, stderr=subprocess.STDOUT,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            env=env)
     except Exception as e:
         logf.close()
         return False, "启动失败: %s" % e, None, None, None
@@ -1556,33 +2414,53 @@ def watch_app_exit(cfg, app_id, proc, token, started_at=None):
     脚本可能把服务放后台后退出，后续的运行判定/停止都靠 pgid 找到存活成员。"""
     started_at = time.time() if started_at is None else started_at
 
+    marker = (app_id, token)
+
     def _wait():
-        code = proc.wait()
-        ended_at = time.time()
-        duration = round(max(0.0, ended_at - started_at), 3)
+        try:
+            code = proc.wait()
+            ended_at = time.time()
+            duration = round(max(0.0, ended_at - started_at), 3)
 
-        with MANUAL_STOP_LOCK:
-            manually_stopped = (app_id, token) in MANUAL_STOP_TOKENS
+            with MANUAL_STOP_LOCK:
+                manually_stopped = marker in MANUAL_STOP_TOKENS
 
-        def op(c):
-            target = find_app(c, app_id)
-            if (not manually_stopped and target
-                    and target.get("lastPid") == proc.pid
-                    and target.get("runToken") == token):
-                last_exit = {
-                    "code": code,
-                    "at": int(ended_at),
-                    "startedAt": int(started_at * 1000),
-                    "durationSec": duration,
-                }
-                if (target.get("kind") or "service") == "task":
-                    last_exit["status"] = classify_task_exit(code)
-                target["lastExit"] = last_exit
-        cfg.update(op)
-        rotate_log_file(os.path.join(LOGS_DIR, "%s.log" % app_id))
+            def op(c):
+                target = find_app(c, app_id)
+                if (not manually_stopped and target
+                        and target.get("lastPid") == proc.pid
+                        and target.get("runToken") == token):
+                    last_exit = {
+                        "code": code,
+                        "at": int(ended_at),
+                        "startedAt": int(started_at * 1000),
+                        "durationSec": duration,
+                    }
+                    if (target.get("kind") or "service") == "task":
+                        last_exit["status"] = classify_task_exit(code)
+                    target["lastExit"] = last_exit
+            cfg.update(op)
+            rotate_log_file(os.path.join(LOGS_DIR, "%s.log" % app_id))
+        finally:
+            with MANUAL_STOP_LOCK:
+                if APP_WATCH_THREADS.get(marker) is threading.current_thread():
+                    APP_WATCH_THREADS.pop(marker, None)
     thread = threading.Thread(target=_wait, daemon=True)
+    with MANUAL_STOP_LOCK:
+        APP_WATCH_THREADS[marker] = thread
     thread.start()
     return thread
+
+
+def wait_app_exit_watcher(app_id, token, timeout=None):
+    """等待指定运行实例的退出收尾，避免配置或日志仍被后台线程占用。"""
+    marker = (app_id, token)
+    with MANUAL_STOP_LOCK:
+        thread = APP_WATCH_THREADS.get(marker)
+    if thread is None or thread is threading.current_thread():
+        return True
+    thread.join(timeout)
+    return not thread.is_alive()
 
 
 def persist_started_app(cfg, app_id, proc, pgid, token):
@@ -1635,6 +2513,8 @@ def stop_app_for_update(cfg, app, timeout=5.0):
 
 def pick_path(what):
     """macOS 原生文件/目录选择框（osascript）。返回 (path|None, canceled)。"""
+    if IS_WIN:
+        return _pick_path_windows(what)
     if what == "dir":
         script = 'POSIX path of (choose folder with prompt "选择工作目录")'
     else:
@@ -1649,11 +2529,59 @@ def pick_path(what):
     return r.stdout.strip().rstrip("/") or None, False
 
 
+def _pick_path_windows(what):
+    """Windows 原生对话框（PowerShell + WinForms）。返回 (path|None, canceled)。"""
+    if what == "dir":
+        script = (
+            "Add-Type -AssemblyName System.Windows.Forms; "
+            "$f = New-Object System.Windows.Forms.FolderBrowserDialog; "
+            "$f.Description = '选择工作目录'; "
+            "$f.ShowNewFolderButton = $true; "
+            "if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) "
+            "{ $f.SelectedPath } else { '__CANCELED__' }")
+    else:
+        script = (
+            "Add-Type -AssemblyName System.Windows.Forms; "
+            "$f = New-Object System.Windows.Forms.OpenFileDialog; "
+            "$f.Title = '选择批处理脚本'; "
+            "$f.Filter = '脚本文件 (*.py;*.ps1;*.bat;*.cmd;*.sh)|*.py;*.ps1;*.bat;*.cmd;*.sh|所有文件 (*.*)|*.*'; "
+            "if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) "
+            "{ $f.FileName } else { '__CANCELED__' }")
+    try:
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive",
+             "-ExecutionPolicy", "Bypass", "-Command", script],
+            capture_output=True, text=True, errors="replace", timeout=180)
+    except Exception:
+        return None, False
+    if r.returncode != 0:
+        return None, False
+    text = r.stdout.strip()
+    if text == "__CANCELED__":
+        return None, True
+    return text.rstrip("/") or None, False
+
+
 def command_for_script(path):
     """按脚本类型生成可直接保存的 shell 命令，并安全引用任意文件名。"""
     normalized = os.path.abspath(os.path.expanduser(str(path)))
-    quoted = shlex.quote(normalized)
     suffix = os.path.splitext(normalized)[1].lower()
+    if IS_WIN:
+        quoted = _win_quote(normalized)
+        if suffix == ".py":
+            runner = "py -3" if shutil.which("py") else "python"
+            return "%s -- %s" % (runner, quoted)
+        if suffix == ".ps1":
+            return "powershell -NoProfile -ExecutionPolicy Bypass -File %s" % quoted
+        if suffix in (".bat", ".cmd", ".exe", ".com"):
+            return quoted
+        if suffix in (".sh", ".bash", ".zsh"):
+            if shutil.which("bash"):  # Git Bash 等
+                return "bash -- %s" % quoted
+        if os.access(normalized, os.R_OK):
+            return quoted
+        return quoted
+    quoted = shlex.quote(normalized)
     if suffix == ".py":
         return "python3 -- %s" % quoted
     if suffix == ".zsh":
@@ -1666,7 +2594,8 @@ def command_for_script(path):
     return "/bin/bash -- %s" % quoted
 
 
-SCRIPT_SUFFIXES = {".py", ".sh", ".bash", ".zsh", ".command"}
+SCRIPT_SUFFIXES = {".py", ".sh", ".bash", ".zsh", ".command",
+                   ".ps1", ".bat", ".cmd"}
 SHELL_BUILTINS = {
     ".", ":", "[", "alias", "break", "cd", "command", "continue", "echo",
     "eval", "exec", "exit", "export", "false", "printf", "pwd", "read",
@@ -1720,14 +2649,14 @@ def _script_target(tokens, cwd):
     base = os.path.basename(executable)
     args = tokens[index + 1:]
 
-    if re.fullmatch(r"python(?:\d+(?:\.\d+)*)?", base):
+    if re.fullmatch(r"(?:python(?:\d+(?:\.\d+)*)?|py(?:-\d+(?:\.\d+)*)?)", base):
         if "-m" in args or "-c" in args:
             return None, False, False
         if args and args[0] == "--":
             args = args[1:]
         candidate = next((arg for arg in args if not arg.startswith("-")), None)
         if candidate and (os.path.splitext(candidate)[1].lower() in SCRIPT_SUFFIXES
-                          or "/" in candidate):
+                          or "/" in candidate or "\\" in candidate):
             return (_resolve_command_path(candidate, cwd), False,
                     not os.path.isabs(os.path.expanduser(candidate)))
         return None, False, False
@@ -1741,13 +2670,13 @@ def _script_target(tokens, cwd):
             args = args[1:]
         candidate = next((arg for arg in args if not arg.startswith("-")), None)
         if candidate and (os.path.splitext(candidate)[1].lower() in SCRIPT_SUFFIXES
-                          or "/" in candidate):
+                          or "/" in candidate or "\\" in candidate):
             return (_resolve_command_path(candidate, cwd), False,
                     not os.path.isabs(os.path.expanduser(candidate)))
         return None, False, False
 
     suffix = os.path.splitext(executable)[1].lower()
-    if suffix in SCRIPT_SUFFIXES or "/" in executable:
+    if suffix in SCRIPT_SUFFIXES or "/" in executable or "\\" in executable:
         return (_resolve_command_path(executable, cwd), True,
                 not os.path.isabs(os.path.expanduser(executable)))
     return None, False, False
@@ -1806,7 +2735,7 @@ def inspect_app_health(app):
             add(
                 "script-not-executable", "脚本不可执行",
                 "直接运行的脚本没有执行权限：%s" % script_path,
-                "给脚本执行权限，或改为使用 bash / python3 执行。",
+                "检查文件访问权限，或改为使用 python / PowerShell / bash 执行。",
                 "edit-command",
             )
 
@@ -1828,7 +2757,7 @@ def inspect_app_health(app):
         if not runtime_ok:
             add(
                 "runtime-missing", "找不到 %s" % executable_base,
-                "总控台的运行环境里找不到命令：%s" % executable,
+                "本地运维台的运行环境里找不到命令：%s" % executable,
                 "安装对应运行时，或在编辑中修改执行命令。",
                 "edit-command",
             )
@@ -2027,13 +2956,15 @@ def detect_project(root):
     if requirements is not None:
         note_file("requirements.txt", requirements)
     py_deps = "\n".join(text for text in (pyproject, requirements) if text).lower()
-    python_runner = "uv run" if os.path.isfile(os.path.join(root, "uv.lock")) else "python3 -m"
-    if os.path.isfile(os.path.join(root, "uv.lock")):
+    has_uv = os.path.isfile(os.path.join(root, "uv.lock"))
+    if has_uv:
         note_file("uv.lock")
+    py_base = "python" if IS_WIN else "python3"
+    py_module = "uv run" if has_uv else ("python -m" if IS_WIN else "python3 -m")
+    py_prefix = "uv run python" if has_uv else py_base
     if os.path.isfile(os.path.join(root, "manage.py")):
         note_file("manage.py")
-        prefix = "uv run python" if python_runner == "uv run" else "python3"
-        add(prefix + " manage.py runserver", "Django 开发服务器", "manage.py", 8000, 20)
+        add(py_prefix + " manage.py runserver", "Django 开发服务器", "manage.py", 8000, 20)
     else:
         for module_file in ("app.py", "main.py", "server.py"):
             module_text = _read_project_text(root, module_file)
@@ -2048,20 +2979,17 @@ def detect_project(root):
                 r"(?m)^\s*(?:import\s+flask\b|from\s+flask\b)", module_text)
             if "streamlit" in py_deps or imports_streamlit:
                 note_file(module_file, module_text)
-                prefix = "uv run" if python_runner == "uv run" else "python3 -m"
-                add(prefix + " streamlit run " + module_file,
+                add(py_module + " streamlit run " + module_file,
                     "Streamlit 应用", module_file, 8501, 22)
                 break
             if "fastapi" in py_deps or imports_fastapi:
                 note_file(module_file, module_text)
-                prefix = "uv run" if python_runner == "uv run" else "python3 -m"
-                add(prefix + " uvicorn %s:app --reload" % module,
+                add(py_module + " uvicorn %s:app --reload" % module,
                     "FastAPI 开发服务器", module_file, 8000, 23)
                 break
             if "flask" in py_deps or imports_flask:
                 note_file(module_file, module_text)
-                prefix = "uv run" if python_runner == "uv run" else "python3 -m"
-                add(prefix + " flask --app %s run --debug" % module,
+                add(py_module + " flask --app %s run --debug" % module,
                     "Flask 开发服务器", module_file, 5000, 24)
                 break
 
@@ -2085,18 +3013,37 @@ def detect_project(root):
         note_file("Cargo.toml")
         add("cargo run", "Rust 项目", "Cargo.toml", None, 61)
 
-    for script_name in ("start.command", "dev.command", "run.command", "start.sh", "dev.sh", "run.sh"):
-        if os.path.isfile(os.path.join(root, script_name)):
-            note_file(script_name)
-            add("bash %s" % shlex.quote("./" + script_name),
-                "现有启动脚本", script_name, None, 70,
-                "也可以继续使用“选择脚本”手动指定")
-            break
+    if IS_WIN:
+        for script_name in ("start.bat", "dev.bat", "run.bat",
+                            "start.cmd", "dev.cmd", "run.cmd", "start.ps1"):
+            if os.path.isfile(os.path.join(root, script_name)):
+                note_file(script_name)
+                add(_win_quote(os.path.join(root, script_name)),
+                    "现有启动脚本", script_name, None, 70,
+                    "也可以继续使用“选择脚本”手动指定")
+                break
+        if shutil.which("bash"):  # Git Bash 可用时同样识别 sh 启动脚本
+            for script_name in ("start.sh", "dev.sh", "run.sh",
+                                "start.command", "dev.command", "run.command"):
+                if os.path.isfile(os.path.join(root, script_name)):
+                    note_file(script_name)
+                    add("bash %s" % _win_quote("./" + script_name),
+                        "现有启动脚本", script_name, None, 71,
+                        "也可以继续使用“选择脚本”手动指定")
+                    break
+    else:
+        for script_name in ("start.command", "dev.command", "run.command", "start.sh", "dev.sh", "run.sh"):
+            if os.path.isfile(os.path.join(root, script_name)):
+                note_file(script_name)
+                add("bash %s" % shlex.quote("./" + script_name),
+                    "现有启动脚本", script_name, None, 70,
+                    "也可以继续使用“选择脚本”手动指定")
+                break
 
     # 纯静态站点最后兜底，避免把 Vite/Next 等项目误当成普通文件目录。
     if not candidates and os.path.isfile(os.path.join(root, "index.html")):
         note_file("index.html")
-        add("python3 -m http.server 8000", "静态网站预览", "index.html", 8000, 90)
+        add(py_module + " http.server 8000", "静态网站预览", "index.html", 8000, 90)
 
     candidates.sort(key=lambda item: item.pop("_priority"))
     return {
@@ -2133,7 +3080,7 @@ def resolve_app_stop_target(app, listeners=None):
         return None, "受控进程组信息无效"
     legacy_pid = legacy_managed_pid(app, listeners)
     if legacy_pid:
-        if app.get("attached"):
+        if app.get("attached") and not IS_WIN:
             try:
                 pgid = os.getpgid(legacy_pid)
             except (ProcessLookupError, PermissionError, OSError):
@@ -2165,6 +3112,8 @@ def signal_app_stop(target, sig=signal.SIGTERM):
     """Signal a target returned by resolve_app_stop_target."""
     ident = target["id"]
     if target["kind"] == "group":
+        if IS_WIN:
+            return _win_terminate_members(ident, target.get("members") or [ident])
         return stop_pid_tree(ident, sig)
     try:
         os.kill(ident, sig)
@@ -2178,6 +3127,12 @@ def signal_app_stop(target, sig=signal.SIGTERM):
 
 
 def stop_target_alive(target, expected_uid=None):
+    if IS_WIN:
+        # 树杀后的存活判定：任一成员（含锚点）仍在即可。
+        members = target.get("members") or []
+        if members:
+            return any(pid_alive(member) for member in members)
+        return pid_alive(target["id"])
     if target["kind"] == "group":
         try:
             os.killpg(target["id"], 0)
@@ -2238,6 +3193,9 @@ def stop_app_and_clear(cfg, app, timeout=APP_STOP_TIMEOUT_SEC, listeners=None):
         ok, error = stop_app_and_wait(app, timeout, listeners)
         if not ok:
             return False, error
+        wait_app_exit_watcher(
+            app.get("id"), app.get("runToken"),
+            timeout=max(1.0, min(float(timeout), 5.0)))
         last_exit = None
         if (app.get("kind") or "service") == "task":
             # 覆盖可能保留的旧成功记录，避免“刚刚手动停止”仍显示上次成功。
@@ -2260,6 +3218,8 @@ def inspect_attach_process(cfg, app, pid):
 
     创建卡片时先调用本函数，再把卡片与运行身份一次写入配置，避免前端
     “先创建、再认领”只完成一半。已有卡片的手动认领也复用同一套校验。"""
+    if IS_WIN:
+        return False, "Windows 版不认领或控制外部进程", {"status": 403}
     if (app.get("kind") or "service") != "service":
         return False, "批处理任务没有端口，无法认领进程", {"status": 422}
     port = app.get("port")
@@ -2565,13 +3525,13 @@ def diagnose_app(cfg, app):
     if m:
         add("deps-missing", "找不到模块 %s" % m.group(1),
             "日志报 Cannot find module '%s'，通常是依赖没装或装坏了。" % m.group(1),
-            "终端执行：cd \"%s\" && npm install（仍报错再 rm -rf node_modules 后重装）。" % (cwd or "<项目目录>"))
+            "PowerShell 执行：Set-Location -LiteralPath \"%s\"; npm install（仍报错可删除 node_modules 后重装）。" % (cwd or "<项目目录>"))
 
     m = re.search(r"(?:env: )?(\S+): (?:no such file or directory|command not found)", log_lower)
     if m and "cannot find module" not in log_lower:
         add("runtime-missing", "找不到运行时：%s" % m.group(1),
             "系统里找不到 %s 这个命令。" % m.group(1),
-            "确认该运行时已安装（如 node / python3 / pnpm）；总控台启动时会补常见 PATH，但程序本身需要存在。")
+            "确认该运行时已安装（如 node / python / pnpm）；本地运维台会继承用户 PATH，但程序本身需要存在。")
 
     if "missing script" in log_lower and has_pkg:
         script_names = []
@@ -2594,13 +3554,13 @@ def diagnose_app(cfg, app):
     if "eacces" in log_lower or "permission denied" in log_lower:
         add("perm", "权限不足",
             "日志报权限不足（EACCES / permission denied）。",
-            "检查文件/目录权限；脚本需要可执行权限：chmod +x <脚本>。不要简单用 sudo 运行。")
+            "检查文件/目录访问权限和安全软件拦截；不要直接改用管理员权限绕过问题。")
 
     m = re.search(r"modulenotfounderror: no module named '([^']+)'", log_lower)
     if m:
         add("pip-missing", "缺少 Python 包：%s" % m.group(1),
             "日志报 ModuleNotFoundError: No module named '%s'。" % m.group(1),
-            "建议在项目目录建虚拟环境再装：python3 -m venv .venv && .venv/bin/pip install %s" % m.group(1))
+            "建议在项目目录建虚拟环境再安装：python -m venv .venv; .venv\\Scripts\\python -m pip install %s" % m.group(1))
 
     if re.search(r"no such file or directory", log_lower) and not issues:
         add("file-missing", "命令里的文件/脚本不存在",
@@ -2612,11 +3572,11 @@ def diagnose_app(cfg, app):
         if code == 126:
             add("not-exec", "命令没有执行权限（exit 126）",
                 "退出码 126 表示文件不可执行。",
-                "给脚本加执行权限：chmod +x <脚本>，或用 bash <脚本> 启动。")
+                "检查文件关联和访问权限，或明确使用 python、PowerShell、bash 等运行时启动。")
         elif code == 127:
             add("not-found", "命令不存在（exit 127）",
                 "退出码 127 表示 shell 找不到这个命令。",
-                "确认命令已安装且在 PATH 里；总控台会补常见路径，但程序本身要存在。")
+                "确认命令已安装且在 PATH 里；本地运维台会继承用户 PATH，但程序本身要存在。")
         elif (isinstance(code, int) and code == 0
               and (app.get("kind") or "service") != "task"):
             add("quick-exit", "命令立即正常退出（exit 0）",
@@ -2851,6 +3811,35 @@ class Handler(BaseHTTPRequestHandler):
         # JSON error prevents keep-alive request smuggling via leftover bytes.
         self.close_connection = True
         self.send_err(status, message)
+        try:
+            self.wfile.flush()
+        except OSError:
+            pass
+        # Windows：closesocket() 在接收缓冲区仍有未读数据时会发 RST，
+        # 客户端可能读不到拒绝响应。先尽力消费已到达的请求体（不阻塞等待，
+        # 防止被攻击者拖住线程），再半关闭丢弃其余，最后正常 FIN。
+        try:
+            self.connection.setblocking(False)
+            while True:
+                try:
+                    chunk = self.connection.recv(65536)
+                    if not chunk:
+                        break
+                except (BlockingIOError, InterruptedError):
+                    break
+                except OSError:
+                    break
+        except OSError:
+            pass
+        finally:
+            try:
+                self.connection.setblocking(True)
+            except OSError:
+                pass
+        try:
+            self.connection.shutdown(socket.SHUT_RD)
+        except OSError:
+            pass
         return False
 
     def _handle_request_error(self, method, exc):
@@ -3226,7 +4215,7 @@ class Handler(BaseHTTPRequestHandler):
                                 "port": self.server.console_port,
                                 "alreadyScheduled": True})
             else:
-                self.send_err(409, "总控台正在停止，无法重复重启")
+                self.send_err(409, "本地运维台正在停止，无法重复重启")
             return
         try:
             helper_pid = schedule_console_restart(
@@ -3249,7 +4238,7 @@ class Handler(BaseHTTPRequestHandler):
                                 "port": self.server.console_port,
                                 "alreadyScheduled": True})
             else:
-                self.send_err(409, "总控台正在重启，无法同时停止")
+                self.send_err(409, "本地运维台正在重启，无法同时停止")
             return
         schedule_console_stop(self.server)
         invalidate_state_cache()
@@ -3849,6 +4838,10 @@ def find_console_instances():
 
 
 def _launcher_dialog(message):
+    """Windows 无 osascript：不弹窗，直接返回 None（等价于取消）。"""
+    if IS_WIN:
+        LOG.info("启动器对话框（Windows 跳过）：%s", message)
+        return None
     script = """on run argv
 set messageText to item 1 of argv
 display dialog messageText with title "总控台" buttons {"取消", "重新启动", "打开控制台"} default button "打开控制台" cancel button "取消" with icon note
@@ -3864,6 +4857,10 @@ end run"""
 
 
 def _launcher_alert(message):
+    """Windows 无 osascript：只进日志。"""
+    if IS_WIN:
+        LOG.error("启动器告警（Windows）：%s", message)
+        return
     script = """on run argv
 display alert "总控台" message (item 1 of argv) as critical
 end run"""
@@ -3875,13 +4872,26 @@ end run"""
 
 
 def launcher_main():
-    """start.command 的无命令启动入口。"""
+    """start.command / start.bat 的无命令启动入口。"""
     instances = find_console_instances()
+    if IS_WIN:
+        # Windows 没有 osascript 重启对话框：已有实例就打开页面，否则启动。
+        if instances:
+            ports = [p for item in instances for p in item["ports"]]
+            port = min(ports) if ports else PORT_START
+            webbrowser.open("http://%s:%d/" % (HOST, port))
+            return
+        try:
+            main(log_to_file=True)
+        except Exception:
+            _launcher_alert("本地运维台 Windows 启动失败。请检查数据目录权限和 console.log。")
+            raise
+        return
     if not instances:
         try:
             main(log_to_file=True)
         except Exception:
-            _launcher_alert("总控台启动失败。请检查数据目录权限和 console.log。")
+            _launcher_alert("本地运维台 Windows 启动失败。请检查数据目录权限和 console.log。")
             raise
         return
     labels = []
@@ -3891,7 +4901,7 @@ def launcher_main():
     extra = ("\n\n检测到 %d 个同项目实例，重启时会合并为一个。" % len(instances)
              if len(instances) > 1 else "")
     choice = _launcher_dialog(
-        "总控台已在运行：\n" + "\n".join(labels) + extra)
+        "本地运维台 Windows 已在运行：\n" + "\n".join(labels) + extra)
     if choice == "打开控制台":
         ports = [p for item in instances for p in item["ports"]]
         port = min(ports) if ports else PORT_START
@@ -3914,13 +4924,13 @@ def launcher_main():
         time.sleep(0.1)
     survivors = [pid for pid in targets if pid_alive(pid)]
     if survivors:
-        _launcher_alert("旧总控台未能正常退出（PID %s），未强制结束。" %
+        _launcher_alert("旧本地运维台未能正常退出（PID %s），未强制结束。" %
                         "、".join(str(pid) for pid in survivors))
         return
     try:
         main(preferred_port=preferred, log_to_file=True)
     except Exception:
-        _launcher_alert("总控台重启失败。请检查数据目录权限和 console.log。")
+        _launcher_alert("本地运维台 Windows 重启失败。请检查数据目录权限和 console.log。")
         raise
 
 
@@ -3985,7 +4995,7 @@ def _run_console(preferred_port=None, open_browser=True):
               (PORT_START, PORT_START + PORT_TRIES - 1))
         sys.exit(1)
 
-    print("总控台已启动: http://%s:%d/  (Ctrl+C 停止)" % (HOST, port), flush=True)
+    print("本地运维台 Windows 已启动: http://%s:%d/  (Ctrl+C 停止)" % (HOST, port), flush=True)
     if open_browser:
         open_browser_later(port)
     try:
@@ -4002,12 +5012,20 @@ def redirect_console_output():
     path = os.path.join(LOGS_DIR, "console.log")
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     try:
-        os.fchmod(fd, 0o600)
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)
         for stream in (sys.stdout, sys.stderr):
             try:
                 stream.flush()
             except (AttributeError, OSError):
                 pass
+        if IS_WIN:
+            # 重定向后 fd 仍是 CRT 文本模式，会与 TextIOWrapper 的
+            # 换行翻译叠加成 \r\r\n；切二进制模式只留一层翻译。
+            import msvcrt
+            msvcrt.setmode(fd, os.O_BINARY)
+            msvcrt.setmode(1, os.O_BINARY)
+            msvcrt.setmode(2, os.O_BINARY)
         os.dup2(fd, 1)
         os.dup2(fd, 2)
     finally:
@@ -4032,7 +5050,7 @@ def main(preferred_port=None, open_browser=True, log_to_file=False):
               flush=True)
     instance_lock = acquire_instance_lock()
     if instance_lock is None:
-        print("总控台已在运行（同一数据目录只允许一个实例）。", flush=True)
+        print("本地运维台 Windows 已在运行（同一数据目录只允许一个实例）。", flush=True)
         if open_browser:
             instances = find_console_instances()
             ports = [port for item in instances for port in item.get("ports", [])]

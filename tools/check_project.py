@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""总控台统一项目检查。
+"""本地运维台 Windows 统一项目检查。
 
 默认执行语法、结构、生成文件和测试检查。本脚本不修改项目文件；
 --release 额外检查 Git 发布边界，但不代替 RELEASE_CHECKLIST.md 的人工验收。
@@ -12,7 +12,6 @@ import ast
 import hashlib
 import json
 import os
-import plistlib
 import re
 import shutil
 import subprocess
@@ -22,7 +21,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 STATIC = ROOT / "static"
-INFO_PLIST = ROOT / "总控台.app" / "Contents" / "Info.plist"
 SEMVER_RE = re.compile(
     r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
     r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
@@ -95,6 +93,8 @@ def check_required_files() -> str:
     required = (
         "VERSION",
         "README.md",
+        "NOTICE.md",
+        "PLAN.md",
         "CHANGELOG.md",
         "LICENSE",
         "SECURITY.md",
@@ -111,14 +111,13 @@ def check_required_files() -> str:
         "requirements-dev.txt",
         "Makefile",
         "server.py",
-        "start.command",
-        "tests/test_server.py",
-        "docs/screenshots/ops-launchpad.jpg",
-        "docs/screenshots/ops-services.jpg",
+        "start.bat",
+        "start_console_win.vbs",
+        "tools/win_anchor.py",
+        "tools/check_privacy.py",
+        "tests/test_windows.py",
         "static/index.html",
         "static/app.js",
-        "总控台.app/Contents/Info.plist",
-        "总控台.app/Contents/MacOS/launcher",
     )
     missing = [name for name in required if not (ROOT / name).is_file()]
     require(not missing, "缺少必要文件: " + ", ".join(missing))
@@ -135,7 +134,6 @@ def check_asset_provenance() -> str:
         for item in sorted(folder.rglob("*"))
         if item.is_file()
     ]
-    tracked.append(ROOT / "总控台.app" / "Contents" / "Resources" / "AppIcon.icns")
     missing = [
         item.relative_to(ROOT).as_posix()
         for item in tracked
@@ -195,19 +193,7 @@ def read_version() -> str:
 
 def check_version() -> str:
     version = read_version()
-    with INFO_PLIST.open("rb") as handle:
-        info = plistlib.load(handle)
-    short = str(info.get("CFBundleShortVersionString", "")).strip()
-    build = str(info.get("CFBundleVersion", "")).strip()
-    version_major_minor = tuple(version.split("-", 1)[0].split(".")[:2])
-    short_parts = tuple(short.split(".")[:2])
-    require(
-        len(short_parts) == 2 and short_parts == version_major_minor,
-        f"Info.plist 版本 {short!r} 与 VERSION {version!r} 的 major.minor 不一致",
-    )
-    require(build.isdigit() and int(build) > 0, "CFBundleVersion 必须是正整数")
-    require(info.get("CFBundleExecutable") == "launcher", "CFBundleExecutable 不是 launcher")
-    return f"VERSION={version}, app={short} ({build})"
+    return f"VERSION={version}"
 
 
 def check_python_syntax() -> str:
@@ -391,17 +377,13 @@ def check_javascript_bindings() -> str:
     return f"{checked} 个模块，{len(shared)} 个公共可调用导出"
 
 
-def check_shell_and_plist() -> str:
-    shell_files = (
-        ROOT / "start.command",
-        ROOT / "总控台.app" / "Contents" / "MacOS" / "launcher",
-    )
-    for path in shell_files:
-        command_output(["/bin/bash", "-n", str(path)])
-        require(os.access(path, os.X_OK), f"{path.relative_to(ROOT)} 没有可执行权限")
-    plutil = shutil.which("plutil") or "/usr/bin/plutil"
-    command_output([plutil, "-lint", str(INFO_PLIST)])
-    return "2 个启动脚本 + Info.plist"
+def check_windows_launchers() -> str:
+    batch = (ROOT / "start.bat").read_text(encoding="utf-8")
+    vbs = (ROOT / "start_console_win.vbs").read_text(encoding="utf-8")
+    require("server.py" in batch and "py -3" in batch, "start.bat 缺少 Python 启动入口")
+    require("start.bat" in vbs and "WScript.Shell" in vbs,
+            "start_console_win.vbs 缺少隐藏启动入口")
+    return "start.bat + start_console_win.vbs"
 
 
 def check_dev_requirements() -> str:
@@ -554,7 +536,8 @@ def check_javascript_tests() -> str:
     files = sorted(str(path) for path in (ROOT / "tests" / "js").glob("*.test.mjs"))
     require(bool(files), "tests/js/ 下没有 .test.mjs 测试文件")
     output = command_output([node, "--test", *files])
-    match = re.search(r"# (pass)\s+(\d+)", output)
+    # node 22 及更早用 TAP 摘要（# pass 7）；node 24+ 用 spec reporter（ℹ pass 7）
+    match = re.search(r"(?:#|ℹ)\s*(pass|fail)\s+(\d+)", output)
     require(match is not None, "无法确认 node --test 结果")
     passed = int(match.group(2))
     require("# fail" not in output or re.search(r"# fail\s+0$", output, re.M),
@@ -596,7 +579,7 @@ def check_release_git() -> str:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="检查总控台项目")
+    parser = argparse.ArgumentParser(description="检查本地运维台 Windows 项目")
     parser.add_argument("--skip-tests", action="store_true", help="只检查语法/结构，不运行测试")
     parser.add_argument("--release", action="store_true", help="额外检查 Git 发布边界")
     return parser.parse_args()
@@ -611,7 +594,7 @@ def main() -> int:
         ("Python 语法", check_python_syntax),
         ("JavaScript 语法", check_javascript_syntax),
         ("JavaScript 模块绑定", check_javascript_bindings),
-        ("启动脚本与 plist", check_shell_and_plist),
+        ("Windows 启动器", check_windows_launchers),
         ("开发依赖锁定", check_dev_requirements),
         ("素材来源台账", check_asset_provenance),
         ("主题注册表", check_themes),

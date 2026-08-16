@@ -16,7 +16,7 @@ let feedSeq = 0;
 let feedEvents = [];
 let prevSnap = null;              // 上一份用于差异对比的快照
 
-/* 断线、页面转入后台或总控台重启后由 app.js 调用：
+/* 断线、页面转入后台或本地运维台 Windows 重启后由 app.js 调用：
    丢弃旧基线，下一份快照只重建基线，避免把断档期积压的变化
    一次性当作“刚刚发生”的事件灌进实时动态/告警。 */
 export function resetFeedBaseline() {
@@ -188,7 +188,7 @@ function diffSnapshot(prev, next) {
     }
   }
   if (!prev.degraded && next.degraded) {
-    pushEvent('error', '总控台进入降级模式', '部分数据可能不完整');
+    pushEvent('error', '本地运维台 Windows进入降级模式', '部分数据可能不完整');
   }
 }
 
@@ -312,9 +312,9 @@ function renderTips(data) {
     text = '检测到 ' + conflicts + ' 个端口冲突，建议尽快处理以避免服务异常。';
     actionable = true;
   } else if (data.degraded) {
-    text = '当前处于降级模式，部分组件数据可能不完整；可尝试重启总控台恢复。';
+    text = '当前处于降级模式，部分组件数据可能不完整；可尝试重启本地运维台 Windows恢复。';
   } else {
-    text = '所有服务运行正常。小技巧：按 ⌘K 打开命令面板，可以快速启动、停止任意应用。';
+    text = '所有服务运行正常。小技巧：按 Ctrl+K 打开命令面板，可以快速启动、停止任意应用。';
   }
   setText(tipsText, text);
   tipsAction.hidden = !actionable;
@@ -335,7 +335,7 @@ export function renderWidgets(data) {
 }
 
 /* ============================================================
-   日志中心（聚合弹层，⌘J）：所有应用与总控台日志的目录页
+   日志中心（聚合弹层，Ctrl+J）：所有应用与本地运维台 Windows 日志的目录页
    ============================================================ */
 const logsMask = $('#logsMask'), logsList = $('#logsList');
 
@@ -375,14 +375,14 @@ function renderLogsList() {
   const apps = (state.data && state.data.apps) || [];
   const sorted = apps.slice().sort((a, b) => (!!b.running) - (!!a.running));
   for (const app of sorted) logsList.appendChild(logsRow(app));
-  /* 总控台自身日志固定在最后 */
+  /* 本地运维台 Windows 自身日志固定在最后 */
   const row = el('button', 'logs-item');
   row.type = 'button';
   const box = el('span', 'logs-ic');
   box.appendChild(icon('terminal', 14));
   const main = el('span', 'logs-main');
   const name = el('span', 'logs-name');
-  name.textContent = '总控台日志';
+  name.textContent = '本地运维台 Windows 日志';
   const sub = el('span', 'logs-sub');
   sub.textContent = '系统 · console.log';
   main.append(name, sub);
@@ -394,7 +394,7 @@ function renderLogsList() {
   logsList.appendChild(row);
   if (!apps.length) {
     const empty = el('div', 'logs-empty');
-    empty.textContent = '启动台还没有应用；上方是总控台自身日志';
+    empty.textContent = '启动台还没有应用；上方是本地运维台 Windows 自身日志';
     logsList.prepend(empty);
   }
 }
