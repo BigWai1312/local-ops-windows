@@ -15,6 +15,7 @@
 - [ ] JavaScript 语法和 Node 行为测试通过。
 - [ ] `python tools/build_release.py --dist dist` 通过。
 - [ ] `python tools/build_release.py --dist dist --verify-only` 通过。
+- [ ] `python tools/build_installer.py --output dist` 生成安装包和 SHA-256。
 - [ ] GitHub Actions `windows-latest` 全部通过。
 
 ## Windows 生命周期
@@ -26,6 +27,9 @@
 - [ ] 外部进程认领和任意进程结束入口不可用。
 - [ ] 同端口外部进程不会被认作受控进程或被结束。
 - [ ] 进程快照失败时破坏性操作 fail-closed。
+- [ ] 安装、覆盖更新和卸载只操作 `%LOCALAPPDATA%\Programs\LocalOpsWindows`。
+- [ ] HKCU Run 使用 `--background`，登录后不弹浏览器或终端窗口。
+- [ ] 安装版在未安装 Python 的环境可启动应用并运行受控锚点。
 
 ## 数据与隐私
 
@@ -40,6 +44,7 @@
 - [ ] 只包含 Windows 启动器；不包含 `.app`、`start.command`、Info.plist 或 ICNS。
 - [ ] `THIRD_PARTY_NOTICES.md`、`ASSET_PROVENANCE.md` 和许可证原文随包提供。
 - [ ] 发行 zip 的 SHA-256 和字节数已记录。
+- [ ] `LocalOpsWindows-Setup.exe` 与 `.sha256` 均已附加到 GitHub Release。
 - [ ] 可重复构建验证通过，两次构建字节一致。
 
 ## GitHub

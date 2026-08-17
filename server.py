@@ -31,6 +31,8 @@ import webbrowser
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import updater
+
 try:
     import fcntl  # POSIX 专属：Windows 上不存在，实例锁改用 msvcrt
 except ImportError:  # pragma: no cover - Windows
@@ -168,10 +170,15 @@ else:  # pragma: no cover - macOS
 IS_WIN = sys.platform == "win32"
 IS_MAC = sys.platform == "darwin"
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+FROZEN = bool(getattr(sys, "frozen", False))
+RESOURCE_DIR = os.path.abspath(getattr(sys, "_MEIPASS", os.path.dirname(__file__)))
+INSTALL_DIR = os.path.dirname(os.path.abspath(sys.executable)) if FROZEN else RESOURCE_DIR
+# Frozen builds read bundled assets from PyInstaller's resource directory;
+# mutable configuration and logs remain under the user's AppData directories.
+BASE_DIR = RESOURCE_DIR
 PRODUCT_NAME = "本地运维台 Windows"
 PRODUCT_ID = "LocalOpsWindows"
-VERSION_PATH = os.path.join(BASE_DIR, "VERSION")
+VERSION_PATH = os.path.join(RESOURCE_DIR, "VERSION")
 LEGACY_DATA_DIR = os.path.join(BASE_DIR, "data")
 if IS_WIN:
     _appdata = os.environ.get("APPDATA") or os.path.expanduser("~")
@@ -207,7 +214,7 @@ DATA_DIR, DATA_DIR_OVERRIDDEN = resolve_runtime_dir(
 ICONS_DIR = os.path.join(DATA_DIR, "icons")
 LOGS_DIR, LOGS_DIR_OVERRIDDEN = resolve_runtime_dir(
     "CONSOLE_LOG_DIR", DEFAULT_LOGS_DIR)
-STATIC_DIR = os.path.join(BASE_DIR, "static")
+STATIC_DIR = os.path.join(RESOURCE_DIR, "static")
 THEMES_DIR = os.path.join(STATIC_DIR, "themes")
 CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 INSTANCE_LOCK_PATH = os.path.join(DATA_DIR, "console.lock")
@@ -2377,15 +2384,22 @@ def _start_app_windows(app, cwd, logf, env, marker, token):
     因此服务/任务完成后的退出码、日志和“仍在运行”判定都能复现。
     受控身份 = 锚点 PID + marker 命令行 + PPID 后代树。
     """
-    anchor = os.path.join(BASE_DIR, "tools", "win_anchor.py")
+    if FROZEN:
+        anchor = os.path.join(INSTALL_DIR, "LocalOpsWindowsAnchor.exe")
+        command = [anchor, marker, app["command"]]
+        missing_message = "缺少 LocalOpsWindowsAnchor.exe，无法在 Windows 启动应用"
+    else:
+        anchor = os.path.join(BASE_DIR, "tools", "win_anchor.py")
+        command = [sys.executable, anchor, marker, app["command"]]
+        missing_message = "缺少 tools/win_anchor.py，无法在 Windows 启动应用"
     if not os.path.isfile(anchor):
         logf.close()
-        return False, "缺少 tools/win_anchor.py，无法在 Windows 启动应用", None, None, None
+        return False, missing_message, None, None, None
     try:
         header = "\n===== 启动于 %s =====\n" % time.strftime("%Y-%m-%d %H:%M:%S")
         logf.write(header.encode("utf-8"))
         proc = subprocess.Popen(
-            [sys.executable, anchor, marker, app["command"]],
+            command,
             cwd=cwd, stdout=logf, stderr=subprocess.STDOUT,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             env=env)
@@ -3987,6 +4001,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/health":
                 self.send_json(build_health(self.server.cfg))
                 return
+            if path == "/api/update/check":
+                self.send_json(updater.check(APP_VERSION))
+                return
             if path == "/api/state":
                 self.send_json(get_state_snapshot(self.server.cfg,
                                                   self.server.console_port))
@@ -4109,6 +4126,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.discard_body()
                 self.handle_console_restart()
                 return
+            if path == "/api/update/apply":
+                self.handle_update_apply()
+                return
             if path == "/api/console/stop":
                 self.discard_body()
                 self.handle_console_stop()
@@ -4229,6 +4249,36 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({"ok": True, "pid": SELF_PID,
                         "helperPid": helper_pid,
                         "port": self.server.console_port})
+
+    def handle_update_apply(self):
+        """Download a verified installer, then hand off after this process exits."""
+        self.discard_body()
+        try:
+            release = updater.latest_release()
+            if updater.version_key(release["version"]) <= updater.version_key(APP_VERSION):
+                self.send_json({"ok": True, "updateAvailable": False,
+                                "currentVersion": APP_VERSION,
+                                "latestVersion": release["version"]})
+                return
+            installer = updater.download_and_verify(
+                release, updater.temporary_update_dir())
+            flags = (getattr(subprocess, "CREATE_NO_WINDOW", 0) |
+                     getattr(subprocess, "DETACHED_PROCESS", 0))
+            subprocess.Popen(
+                [str(installer), "--update-pid", str(SELF_PID), "--silent"],
+                cwd=str(installer.parent), stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=flags, close_fds=True)
+        except Exception as exc:
+            LOG.exception("启动更新失败")
+            self.send_json({"ok": False, "error": "更新失败：%s" % exc}, 500)
+            return
+        self.send_json({"ok": True, "updateStarted": True,
+                        "currentVersion": APP_VERSION,
+                        "latestVersion": release["version"]})
+        threading.Thread(target=lambda: (time.sleep(0.4),
+                                         self.server.shutdown()),
+                         daemon=True).start()
 
     def handle_console_stop(self):
         reserved, current, _ = self.server.reserve_console_action("stop")
@@ -4936,10 +4986,11 @@ def launcher_main():
 
 def schedule_console_restart(server, preferred_port):
     """启动独立 helper，响应发出后关闭当前 HTTP 服务。"""
+    command = ([sys.executable, "--restart-helper"] if FROZEN else
+               [sys.executable, os.path.abspath(__file__), "--restart-helper"])
     helper = subprocess.Popen(
-        [sys.executable, os.path.abspath(__file__), "--restart-helper",
-         str(SELF_PID), str(int(preferred_port))],
-        cwd=BASE_DIR, start_new_session=True, close_fds=True)
+        command + [str(SELF_PID), str(int(preferred_port))],
+        cwd=INSTALL_DIR, start_new_session=True, close_fds=True)
 
     def _shutdown():
         time.sleep(0.25)
@@ -4963,8 +5014,9 @@ def restart_helper(old_pid, preferred_port):
         time.sleep(0.1)
     if pid_alive(old_pid):
         return 1
-    args = [sys.executable, os.path.abspath(__file__),
-            "--preferred-port", str(int(preferred_port)), "--no-browser"]
+    args = ([sys.executable, "--preferred-port"] if FROZEN else
+            [sys.executable, os.path.abspath(__file__), "--preferred-port"])
+    args += [str(int(preferred_port)), "--no-browser"]
     os.execv(sys.executable, args)
     return 0
 
@@ -5023,11 +5075,16 @@ def redirect_console_output():
             # 重定向后 fd 仍是 CRT 文本模式，会与 TextIOWrapper 的
             # 换行翻译叠加成 \r\r\n；切二进制模式只留一层翻译。
             import msvcrt
-            msvcrt.setmode(fd, os.O_BINARY)
-            msvcrt.setmode(1, os.O_BINARY)
-            msvcrt.setmode(2, os.O_BINARY)
-        os.dup2(fd, 1)
-        os.dup2(fd, 2)
+            for target in (fd, 1, 2):
+                try:
+                    msvcrt.setmode(target, os.O_BINARY)
+                except OSError:
+                    pass
+        for target in (1, 2):
+            try:
+                os.dup2(fd, target)
+            except OSError:
+                pass
     finally:
         os.close(fd)
     for stream in (sys.stdout, sys.stderr):
@@ -5086,4 +5143,7 @@ if __name__ == "__main__":
                 preferred = int(sys.argv[index + 1])
             except (ValueError, IndexError):
                 sys.exit(2)
-        main(preferred_port=preferred, open_browser="--no-browser" not in sys.argv)
+        background = "--background" in sys.argv
+        main(preferred_port=preferred,
+             open_browser=(not background and "--no-browser" not in sys.argv),
+             log_to_file=background)

@@ -46,12 +46,15 @@ INCLUDE = (
     "licenses",
     *REQUIRED_LICENSES,
     "server.py",
+    "updater.py",
+    "installer.py",
     "start.bat",
     "start_console_win.vbs",
     "static",
     "tests",
     "tools",
     "requirements-dev.txt",
+    "requirements-build.txt",
     "Makefile",
 )
 EXCLUDED_PARTS = {
@@ -106,6 +109,7 @@ SENSITIVE_SUFFIXES = {
 SAFE_ENV_SUFFIXES = {".example", ".sample", ".template"}
 EXECUTABLE_FILES = {
     "tools/build_release.py",
+    "tools/build_installer.py",
 }
 SEMVER_RE = re.compile(
     r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"

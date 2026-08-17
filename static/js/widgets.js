@@ -30,6 +30,7 @@ const tipsText = $('#tipsText'), tipsAction = $('#tipsAction');
 const railConnDot = $('#railConnDot'), railConnText = $('#railConnText');
 const railVer = $('#railVer');
 let resMetric = 'cpu';
+let updateInfo = null;
 
 /* ---------------- 静态装饰图标与快捷操作 ---------------- */
 export function initWidgets() {
@@ -83,6 +84,8 @@ export function initWidgets() {
     applyTheme();
     syncSettings();
   });
+  $('#setUpdateCheck').addEventListener('click', checkForUpdates);
+  $('#setUpdateApply').addEventListener('click', applyUpdate);
 
   $('#feedClearL').addEventListener('click', clearFeed);
   $('#feedClearS').addEventListener('click', clearFeed);
@@ -424,6 +427,52 @@ function syncSettings() {
   setText($('#setVersion'), d.version ? 'v' + d.version : '—');
   setText($('#setPort'), d.consolePort ? ':' + d.consolePort : '—');
   setText($('#setCwd'), d.consoleCwd || '—');
+  setText($('#setLatestVersion'), updateInfo && updateInfo.latestVersion
+    ? 'v' + updateInfo.latestVersion : '—');
+  const apply = $('#setUpdateApply');
+  apply.hidden = !(updateInfo && updateInfo.ok && updateInfo.updateAvailable);
+  apply.disabled = !!(updateInfo && updateInfo.updateStarted);
+}
+
+async function checkForUpdates() {
+  const button = $('#setUpdateCheck');
+  const status = $('#setUpdateStatus');
+  button.disabled = true;
+  setText(status, '正在检查 GitHub Releases…');
+  try {
+    const response = await fetch('/api/update/check', { cache: 'no-store' });
+    const data = await response.json();
+    updateInfo = data;
+    if (!response.ok || !data.ok) {
+      setText(status, data.error || '暂时无法检查更新');
+    } else if (data.updateAvailable) {
+      setText(status, '发现新版本，可下载并安装');
+    } else {
+      setText(status, '当前已是最新版本');
+    }
+  } catch (error) {
+    updateInfo = { ok: false };
+    setText(status, '检查更新失败，请稍后重试');
+  } finally {
+    button.disabled = false;
+    syncSettings();
+  }
+}
+
+async function applyUpdate() {
+  const button = $('#setUpdateApply');
+  button.disabled = true;
+  setText($('#setUpdateStatus'), '正在下载并校验安装包…');
+  const result = await act(post('/api/update/apply', {}));
+  if (result && result.ok && result.updateStarted) {
+    updateInfo = { ...(updateInfo || {}), updateStarted: true };
+    setText($('#setUpdateStatus'), '更新已启动，本地运维台即将重启');
+    toast('更新已启动');
+  } else {
+    button.disabled = false;
+    setText($('#setUpdateStatus'), (result && result.error) || '更新失败');
+  }
+  syncSettings();
 }
 
 export function openSettingsCenter() {

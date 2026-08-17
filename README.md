@@ -15,6 +15,8 @@
 - 参考 PR #3 的安全模型：受控 token、进程创建身份、进程树校验和 fail-closed。
 - 参考 PR #4 的 Windows API 对齐和隐藏窗口启动方式，但不维护第二套独立后端。
 - 增加 Windows 测试、隐私扫描、发行包审计和明确的二开归属说明。
+- 增加 `LocalOpsWindows-Setup.exe`：按当前用户安装、开始菜单/桌面快捷方式、HKCU 开机自启和卸载入口。
+- 设置中心支持检查个人 GitHub 仓库 Releases，下载后校验 SHA-256 并交给安装器完成更新。
 
 完整范围见 [`PLAN.md`](PLAN.md) 和 [`NOTICE.md`](NOTICE.md)。
 
@@ -30,11 +32,24 @@
 ## 系统要求
 
 - Windows 10/11 x64。
-- Python 3.12 或更高版本。
 - Windows PowerShell 5.1 或 PowerShell 7。
 - Chrome、Edge、Firefox 等支持 ES Modules 的现代浏览器。
 
-运行时不需要安装第三方 Python 包。Pillow 等只用于开发期资源生成，不随程序运行。
+安装版运行时不需要安装 Python 或第三方 Python 包。源码调试和发行构建才需要 Python 3.12 或更高版本。
+
+## 安装版
+
+从个人仓库的 GitHub Release 下载 `LocalOpsWindows-Setup.exe`，双击后按当前用户安装到：
+
+```text
+%LOCALAPPDATA%\Programs\LocalOpsWindows
+```
+
+安装器会创建开始菜单和桌面快捷方式，并默认写入当前用户的开机自启项。若检测到旧版源码部署使用的同名计划任务 `Local Ops Windows`，安装器会删除该任务，避免登录时重复启动。它不要求管理员权限，也不会修改 Docker 项目、系统服务或已有端口。卸载可从 Windows“应用和功能”进入，或运行安装目录中的 `LocalOpsWindows-Setup.exe --uninstall`。
+
+安装完成后，网页 UI 会在本地浏览器打开；开机自启使用静默后台模式，不主动弹出浏览器。
+
+当前公开安装包未做商业代码签名，Windows SmartScreen 可能显示“未知发布者”。Release 同时提供 `.sha256` 文件；安装前可用 `Get-FileHash` 核对，但这不能替代正式代码签名。
 
 ## 启动
 
@@ -62,6 +77,8 @@ py -3 server.py --preferred-port 9603
 ```
 
 程序只绑定 `127.0.0.1`，默认从端口 `9600` 开始，被占用时依次尝试到 `9609`。
+
+安装版支持 `LocalOpsWindows.exe --background`，供开机自启使用；普通启动不加该参数会打开网页 UI。
 
 ## 数据与日志
 
@@ -117,7 +134,11 @@ python tools/check_privacy.py
 
 ```powershell
 python tools/build_release.py --dist dist
+python -m pip install -r requirements-build.txt
+python tools/build_installer.py --output dist
 ```
+
+GitHub Actions 在 `main` 分支推送或手动触发时，会构建源码 ZIP、安装 EXE 及对应 SHA-256 文件，并创建或更新 `v<version>` Release。应用内更新只信任仓库 `BigWai1312/local-ops-windows` 的 HTTPS Release 资产。
 
 ## 隐私与发布
 

@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## 1.1.0
+
+### Added
+
+- 用户态 `LocalOpsWindows-Setup.exe` 安装器，包含开始菜单/桌面快捷方式、HKCU 开机自启、卸载注册表项和静默后台模式。
+- PyInstaller 构建链路和 GitHub Actions Release 发布任务。
+- 设置中心的 GitHub Release 检查、下载、SHA-256 校验和更新交接。
+- 冻结版专用 `LocalOpsWindowsAnchor.exe`，不再依赖目标机器安装 Python。
+
+### Security
+
+- 更新资产仅接受个人仓库的 HTTPS Release URL，并限制安装包大小后再校验 SHA-256。
+- 更新安装由独立安装器等待旧进程退出后替换文件，不覆盖 `%APPDATA%` 配置和日志。
+
+## 1.0.0
+
 ### Added
 
 - Windows 10/11 专用启动器 `start.bat` 和 `start_console_win.vbs`。
