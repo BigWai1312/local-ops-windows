@@ -1,5 +1,7 @@
-# macOS / editors
+# Windows / editors
 .DS_Store
+Thumbs.db
+Desktop.ini
 *.swp
 *.swo
 *~

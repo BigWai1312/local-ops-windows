@@ -1,4 +1,4 @@
-name: CI
+name: Windows CI
 
 on:
   push:
@@ -9,10 +9,14 @@ permissions:
   contents: read
 
 jobs:
-  check-and-release:
-    name: Check and release audit
-    runs-on: macos-15
-    timeout-minutes: 20
+  windows-check:
+    name: Windows / Python ${{ matrix.python-version }}
+    runs-on: windows-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
     env:
       PYTHONDONTWRITEBYTECODE: "1"
       SOURCE_DATE_EPOCH: "1704067200"
@@ -23,24 +27,104 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Python 3.12
+      - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
 
       - name: Show toolchain
         run: |
           python --version
           node --version
 
-      - name: Run project checks
-        run: make check PYTHON=python
+      - name: Run privacy scan
+        run: python tools/check_privacy.py
 
-      - name: Build and verify release
+      - name: Run project checks
+        run: python tools/check_project.py
+
+      - name: Start server smoke test
+        if: matrix.python-version == '3.12'
+        shell: pwsh
         run: |
-          make release PYTHON=python
-          make release-verify PYTHON=python
-          cp dist/console-*.zip "$RUNNER_TEMP/console-first.zip"
-          make release PYTHON=python
-          cmp "$RUNNER_TEMP/console-first.zip" dist/console-*.zip
-          make release-verify PYTHON=python
+          $env:CONSOLE_DATA_DIR = "$env:RUNNER_TEMP\local-ops-windows-data"
+          $env:CONSOLE_LOG_DIR = "$env:RUNNER_TEMP\local-ops-windows-logs"
+          $proc = Start-Process python -ArgumentList 'server.py','--no-browser','--preferred-port','9603' -PassThru -WindowStyle Hidden
+          try {
+            $deadline = (Get-Date).AddSeconds(30)
+            do {
+              Start-Sleep -Milliseconds 500
+              try { $health = Invoke-RestMethod 'http://127.0.0.1:9603/api/health' -TimeoutSec 2 } catch { $health = $null }
+            } while (-not $health -and (Get-Date) -lt $deadline)
+            if (-not $health) { throw 'health check timed out' }
+            if ($health.platform -ne 'windows') { throw "unexpected platform: $($health.platform)" }
+          } finally {
+            if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+          }
+
+      - name: Build reproducible release
+        if: matrix.python-version == '3.12'
+        shell: pwsh
+        run: |
+          python tools/build_release.py --dist dist
+          $first = (Get-FileHash dist\local-ops-windows-*.zip -Algorithm SHA256).Hash
+          python tools/build_release.py --dist dist
+          $second = (Get-FileHash dist\local-ops-windows-*.zip -Algorithm SHA256).Hash
+          if ($first -ne $second) { throw 'release archive is not reproducible' }
+          python tools/build_release.py --dist dist --verify-only
+
+  publish-release:
+    name: Build and publish Windows installer
+    needs: windows-check
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      SOURCE_DATE_EPOCH: "1704067200"
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Install build toolchain
+        run: python -m pip install --disable-pip-version-check -r requirements-build.txt
+
+      - name: Run release gates
+        run: |
+          python tools/check_privacy.py
+          python tools/check_project.py
+          python -m unittest discover -s tests -p "test_*.py" -v
+
+      - name: Build source archive and installer
+        run: |
+          python tools/build_release.py --dist dist
+          python tools/build_installer.py --output dist
+
+      - name: Create or update GitHub Release
+        shell: pwsh
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          $tag = "v$version"
+          $assets = @(
+            "dist\local-ops-windows-$version.zip",
+            "dist\local-ops-windows-$version.zip.sha256",
+            "dist\LocalOpsWindows-Setup.exe",
+            "dist\LocalOpsWindows-Setup.exe.sha256"
+          )
+          gh release view $tag --repo $env:GITHUB_REPOSITORY 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag --repo $env:GITHUB_REPOSITORY --clobber $assets
+          } else {
+            gh release create $tag --repo $env:GITHUB_REPOSITORY --title "Local Ops Windows $version" --generate-notes $assets
+          }

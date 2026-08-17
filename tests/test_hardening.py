@@ -137,6 +137,7 @@ class HttpSecurityTests(unittest.TestCase):
         self.assertNotIn("Access-Control-Allow-Origin", headers)
 
 
+@unittest.skipIf(server.IS_WIN, "Windows 版禁止外部进程认领")
 class AtomicAttachCreateTests(unittest.TestCase):
     def setUp(self):
         self.h = HttpHarness()
@@ -324,6 +325,8 @@ class OperationLockTests(unittest.TestCase):
 
         with mock.patch.object(server, "app_alive_sign", return_value=False), \
                 mock.patch.object(server, "scan_listeners", return_value=set()), \
+                mock.patch.object(server, "inspect_app_health", return_value={
+                    "status": "ok", "blocking": False, "issues": []}), \
                 mock.patch.object(server, "start_app", side_effect=slow_start), \
                 mock.patch.object(server, "persist_started_app", return_value=True):
             thread = threading.Thread(target=first_request)
@@ -396,8 +399,11 @@ class ProcessLifecycleHardeningTests(unittest.TestCase):
     def test_manual_stop_waits_then_clears_without_recording_last_exit(self):
         with tempfile.TemporaryDirectory() as td, \
                 mock.patch.object(server, "LOGS_DIR", td):
+            command = (subprocess.list2cmdline([
+                sys.executable, "-c", "import time; time.sleep(20)"])
+                if server.IS_WIN else "sleep 20")
             base = {**server.Config.APP_DEFAULT, "id": "deadbeef",
-                    "name": "Service", "command": "sleep 20", "cwd": td}
+                    "name": "Service", "command": command, "cwd": td}
             cfg = self._config_with_app(td, base)
             ok, error, proc, pgid, token = server.start_app(base)
             self.assertTrue(ok, error)
@@ -407,7 +413,9 @@ class ProcessLifecycleHardeningTests(unittest.TestCase):
                 time.sleep(0.15)
                 stopped, error = server.stop_app_and_clear(cfg, tracked, timeout=2)
                 self.assertTrue(stopped, error)
-                time.sleep(0.05)
+                proc.wait(timeout=3)
+                if server.IS_WIN:
+                    time.sleep(0.3)  # Windows 延迟释放已退出进程的 cwd 目录句柄。
                 result = server.find_app(cfg.snapshot(), base["id"])
                 self.assertIsNone(result["runToken"])
                 self.assertIsNone(result["lastPid"])
@@ -415,17 +423,23 @@ class ProcessLifecycleHardeningTests(unittest.TestCase):
             finally:
                 if server.stop_target_alive(
                         {"kind": "group", "id": pgid, "members": [proc.pid]}):
-                    try:
-                        os.killpg(pgid, signal.SIGKILL)
-                    except OSError:
-                        pass
+                    if server.IS_WIN:
+                        server.stop_pid_tree(pgid)
+                    else:
+                        try:
+                            os.killpg(pgid, signal.SIGKILL)
+                        except OSError:
+                            pass
 
     def test_manual_task_stop_replaces_old_success_with_stopped_result(self):
         with tempfile.TemporaryDirectory() as td, \
                 mock.patch.object(server, "LOGS_DIR", td):
             previous = {"code": 0, "at": 123, "durationSec": 0.1}
+            command = (subprocess.list2cmdline([
+                sys.executable, "-c", "import time; time.sleep(20)"])
+                if server.IS_WIN else "sleep 20")
             base = {**server.Config.APP_DEFAULT, "id": "deadbeef",
-                    "name": "Task", "kind": "task", "command": "sleep 20",
+                    "name": "Task", "kind": "task", "command": command,
                     "cwd": td, "lastExit": previous}
             cfg = self._config_with_app(td, base)
             ok, error, proc, pgid, token = server.start_app(base)
@@ -437,7 +451,9 @@ class ProcessLifecycleHardeningTests(unittest.TestCase):
                 stopped, error = server.stop_app_and_clear(
                     cfg, tracked, timeout=2)
                 self.assertTrue(stopped, error)
-                time.sleep(0.05)
+                proc.wait(timeout=3)
+                if server.IS_WIN:
+                    time.sleep(0.3)  # Windows 延迟释放已退出进程的 cwd 目录句柄。
                 result = server.find_app(cfg.snapshot(), base["id"])
                 self.assertIsNone(result["runToken"])
                 self.assertIsNone(result["lastPid"])
@@ -448,11 +464,15 @@ class ProcessLifecycleHardeningTests(unittest.TestCase):
             finally:
                 if server.stop_target_alive(
                         {"kind": "group", "id": pgid, "members": [proc.pid]}):
-                    try:
-                        os.killpg(pgid, signal.SIGKILL)
-                    except OSError:
-                        pass
+                    if server.IS_WIN:
+                        server.stop_pid_tree(pgid)
+                    else:
+                        try:
+                            os.killpg(pgid, signal.SIGKILL)
+                        except OSError:
+                            pass
 
+    @unittest.skipIf(server.IS_WIN, "Windows 无 SIGTERM/SIG_IGN 语义（见 test_windows.py）")
     def test_sigterm_timeout_retains_runtime_identity_for_retry(self):
         command = (
             "python3 -c 'import signal,time; "
@@ -559,7 +579,10 @@ class StaticFileServingTests(unittest.TestCase):
                 f.write("secret")
             static = os.path.join(td, "static")
             os.mkdir(static)
-            os.symlink(outside, os.path.join(static, "leak.txt"))
+            try:
+                os.symlink(outside, os.path.join(static, "leak.txt"))
+            except OSError as exc:
+                self.skipTest("当前 Windows 环境不允许创建符号链接: %s" % exc)
             with mock.patch.object(server, "STATIC_DIR", static):
                 status, body, _ = self.h.request("GET", "/leak.txt")
             self.assertEqual(status, 404)
@@ -591,14 +614,19 @@ class KillEndpointTests(unittest.TestCase):
             self.headers)
         self.assertEqual(status, 200)
         self.assertFalse(body["ok"])
-        self.assertIn("自身", body["error"])
+        self.assertIn(
+            "不允许结束外部进程" if server.IS_WIN else "自身",
+            body["error"])
 
         status, body, _ = self.h.request(
             "POST", "/api/kill", json.dumps({"pid": 99999999}), self.headers)
         self.assertEqual(status, 200)
         self.assertFalse(body["ok"])
-        self.assertIn("不存在", body["error"])
+        self.assertIn(
+            "不允许结束外部进程" if server.IS_WIN else "不存在",
+            body["error"])
 
+    @unittest.skipIf(server.IS_WIN, "Windows 版禁止任意外部进程结束")
     def test_kill_sends_sigterm_to_owned_process(self):
         proc = subprocess.Popen(
             [sys.executable, "-c", "import time; time.sleep(30)"])
@@ -616,6 +644,7 @@ class KillEndpointTests(unittest.TestCase):
             if proc.poll() is None:
                 proc.kill()
 
+    @unittest.skipIf(server.IS_WIN, "Windows 无 SIGTERM 语义（kill 即 TerminateProcess）")
     def test_kill_force_sends_sigkill_to_sigterm_immune_process(self):
         code = ("import signal,time; signal.signal(signal.SIGTERM,"
                 " signal.SIG_IGN); time.sleep(30)")
@@ -797,6 +826,7 @@ class StateMutationEndpointTests(unittest.TestCase):
         self.assertEqual(len(body["text"].splitlines()), 300)
 
 
+@unittest.skipIf(server.IS_WIN, "Windows 版禁止外部进程认领")
 class AttachConflictTests(unittest.TestCase):
     """认领检查与写入同锁：并发请求无法把同一 pid 认领给两张卡片。"""
 

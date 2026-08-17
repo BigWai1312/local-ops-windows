@@ -1,44 +1,38 @@
-# 安全政策
-
-总控台会以当前 macOS 用户的权限执行用户保存的 shell 命令，并提供启动、停止和结束本地进程的接口。请把命令执行、身份校验、写接口授权、路径处理、配置完整性和敏感信息泄露问题视为高影响安全问题。
+# Security Policy
+本地运维台 Windows 会以当前 Windows 用户权限执行用户保存的命令。命令执行、进程所有权、写接口授权、路径处理和配置完整性均属于高影响安全边界。
 
 ## 支持范围
 
-项目仍处于 Preview / Alpha 阶段。安全修复优先面向默认分支和最新发布版本；旧版本是否继续支持会在对应发行说明中注明。尚未发布的本地开发提交不承诺兼容修复。
+- Windows 10/11 x64。
+- Python 3.12+。
+- 仅限本机回环地址，不支持公网、反向代理、端口映射或多用户远程管理。
 
-## 私下报告漏洞
+## 进程控制边界
 
-请优先使用 GitHub 仓库 **Security → Report a vulnerability** 提交私密报告。公开仓库建立后，维护者必须先启用 GitHub Private Vulnerability Reporting，再对外发布版本。
+- 不允许通过端口、裸 PID、进程名、cwd 或 PPID 单独结束进程。
+- Windows 版不开放外部进程认领和任意进程结束能力。
+- 只有本程序启动、带当前随机 token、并通过受控进程树校验的应用可以停止或重启。
+- 身份不完整、进程快照读取失败或状态发生竞态时，操作必须 fail-closed。
+- 测试和诊断不得结束用户已有进程。
 
-如果私密报告入口暂不可用，请不要在公开 Issue、讨论区或 Pull Request 中披露漏洞细节。请通过仓库所有者 GitHub 个人资料中已经验证的联系方式，只发送“不含漏洞细节、请求建立私密通道”的简短消息；在私密通道确认前不要附带复现代码、日志、配置或路径。
+## HTTP 边界
 
-一份有用的私密报告应包含：
+- 只绑定 `127.0.0.1`。
+- 写接口必须校验 Host、Origin、Sec-Fetch、会话 Cookie 和 Content-Type。
+- 不允许通过 CORS、DNS rebinding 或简单表单请求绕过写接口保护。
 
-- 受影响版本或 commit；
-- macOS 与 Python 版本；
-- 影响范围和攻击前提；
-- 最小化复现步骤；
-- 预期行为与实际行为；
-- 已完成脱敏的相关日志或请求；
-- 你认为安全的修复方向（可选）。
+## 敏感信息
 
-## 必须脱敏的内容
+以下内容不得提交到 GitHub、发行包或公开问题：
 
-不要提交下列原始数据：
+- `%APPDATA%\LocalOpsWindows\config.json{,.bak}`；
+- `%LOCALAPPDATA%\LocalOpsWindows\logs\`；
+- 完整命令、真实工作目录、用户名、机器名和邮箱；
+- token、Cookie、API key、SSH key、`.env` 和账号凭据；
+- 未脱敏的截图、崩溃转储和调试日志。
 
-- `~/Library/Application Support/总控台/config.json{,.bak}`；
-- `~/Library/Logs/总控台/` 中的日志；
-- 完整 shell 命令、个人工作目录、用户名和主目录路径；
-- PID、进程启动 token、访问令牌、密钥或环境变量；
-- 用户上传图标或其他不具备公开授权的文件。
+示例路径统一使用 `C:\Users\example\project`。
 
-请使用 `/Users/example/project`、`TOKEN_REDACTED` 等明确占位符，并在提交前复核截图和录屏。
+## 报告漏洞
 
-## 项目安全边界
-
-- HTTP 服务只应绑定 `127.0.0.1`，不应直接或间接暴露到局域网或公网。
-- 本项目不是多用户权限系统，也不是远程管理面板。
-- 只有受信任的本地用户才能添加和执行命令。
-- 本地回环绑定不能替代 Host、Origin、控制令牌、当前 UID 和受控进程身份校验。
-
-修复准备公开前，维护者会尽量与报告者协调披露时间。请勿在修复可用前公开可直接利用的细节。
+优先使用目标 GitHub 仓库的 Private Vulnerability Reporting。若私密入口不可用，不要在公开 Issue、Discussion 或 Pull Request 中披露复现步骤、日志、配置或路径。
