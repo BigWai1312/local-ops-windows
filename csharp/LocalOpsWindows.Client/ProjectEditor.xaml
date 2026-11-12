@@ -1,0 +1,140 @@
+<Window x:Class="LocalOpsWindows.Client.ProjectEditor"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="编辑项目" Width="680" Height="770" MinWidth="540" MinHeight="580"
+        Background="{DynamicResource PopupBrush}" WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False" ResizeMode="CanResize">
+    <Window.Resources>
+        <Style x:Key="ModeOption" TargetType="RadioButton">
+            <Setter Property="Padding" Value="16,8"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RadioButton">
+                        <Border Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}" CornerRadius="6">
+                            <ContentPresenter/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Triggers>
+                <Trigger Property="IsChecked" Value="True">
+                    <Setter Property="Background" Value="{DynamicResource AccentSoftBrush}"/>
+                    <Setter Property="FontWeight" Value="SemiBold"/>
+                </Trigger>
+                <Trigger Property="IsKeyboardFocused" Value="True">
+                    <Setter Property="Background" Value="{DynamicResource GlassHoverBrush}"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+    </Window.Resources>
+    <DockPanel>
+        <Border DockPanel.Dock="Top" Padding="24,18" BorderBrush="{DynamicResource SoftBorderBrush}" BorderThickness="0,0,0,1">
+            <Grid>
+                <Grid.ColumnDefinitions><ColumnDefinition Width="48"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <Border Width="38" Height="38" Background="{DynamicResource AccentSoftBrush}" CornerRadius="8">
+                    <Grid>
+                        <TextBlock x:Name="IconGlyph" FontFamily="Segoe MDL2 Assets" FontSize="20"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{DynamicResource AccentBrush}"/>
+                        <Image x:Name="IconPreview" Width="32" Height="32" Stretch="Uniform"/>
+                    </Grid>
+                </Border>
+                <TextBlock x:Name="Heading" Grid.Column="1" Text="添加项目" FontSize="18" FontWeight="SemiBold"
+                           TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                <StackPanel Grid.Column="2" Orientation="Horizontal">
+                    <RadioButton x:Name="ServiceMode" Content="服务" Style="{StaticResource ModeOption}" GroupName="Kind" Checked="KindChanged"/>
+                    <RadioButton x:Name="TaskMode" Content="批处理任务" Style="{StaticResource ModeOption}" GroupName="Kind" Checked="KindChanged"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+        <Border DockPanel.Dock="Bottom" Padding="24,14" BorderBrush="{DynamicResource SoftBorderBrush}" BorderThickness="0,1,0,0">
+            <StackPanel>
+                <TextBlock x:Name="ErrorText" TextWrapping="Wrap" Foreground="{DynamicResource DangerBrush}" Margin="0,0,0,8"
+                           AutomationProperties.LiveSetting="Polite"/>
+                <Grid>
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                    <Button x:Name="StopButton" HorizontalAlignment="Left" Style="{StaticResource DangerButton}" Click="StopProject" Visibility="Collapsed">
+                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE71A;" Style="{StaticResource CommandIcon}"/><TextBlock Text="停止服务"/></StackPanel>
+                    </Button>
+                    <Button Grid.Column="1" Style="{StaticResource ToolbarButton}" IsCancel="True" Content="取消"/>
+                    <Button x:Name="SaveButton" Grid.Column="2" Style="{StaticResource AccentButton}" Click="SaveProject">
+                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE74E;" Style="{StaticResource CommandIcon}"/><TextBlock Text="保存项目" Foreground="White"/></StackPanel>
+                    </Button>
+                </Grid>
+            </StackPanel>
+        </Border>
+        <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+            <StackPanel x:Name="FormPanel" Margin="24,18">
+                <TextBlock Text="名称" FontWeight="SemiBold"/>
+                <TextBox x:Name="NameInput" Style="{StaticResource TextInput}" AutomationProperties.Name="项目名称" Margin="0,6,0,14"/>
+                <TextBlock Text="工作目录" FontWeight="SemiBold"/>
+                <DockPanel Margin="0,6,0,0">
+                    <Button DockPanel.Dock="Right" Style="{StaticResource ToolbarButton}" Click="DetectProject">
+                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE72C;" Style="{StaticResource CommandIcon}"/><TextBlock Text="重新识别"/></StackPanel>
+                    </Button>
+                    <Button DockPanel.Dock="Right" Content="&#xE8B7;" FontFamily="Segoe MDL2 Assets" Style="{StaticResource IconButton}"
+                            ToolTip="选择工作目录" AutomationProperties.Name="选择工作目录" Click="PickFolder"/>
+                    <TextBox x:Name="CwdInput" Style="{StaticResource TextInput}" AutomationProperties.Name="工作目录"
+                             TextChanged="DirectoryChanged" Margin="0,0,8,0"/>
+                </DockPanel>
+                <TextBlock x:Name="DetectionText" TextWrapping="Wrap" FontSize="12" Foreground="{DynamicResource MutedTextBrush}" Margin="0,4,0,6">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+                            <Style.Triggers><Trigger Property="Text" Value=""><Setter Property="Visibility" Value="Collapsed"/></Trigger></Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
+                <ListBox x:Name="CandidatesList" MaxHeight="150" Background="Transparent" BorderThickness="0"
+                         HorizontalContentAlignment="Stretch" SelectionChanged="CandidateSelected"
+                         AutomationProperties.Name="项目命令候选">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <Grid Margin="8,6">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="100"/></Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Text="{Binding Label}" FontWeight="SemiBold"/>
+                                    <TextBlock Text="{Binding Command}" FontSize="12" TextTrimming="CharacterEllipsis"
+                                               ToolTip="{Binding Command}" Margin="0,3,0,0"/>
+                                    <TextBlock Text="{Binding Source}" FontSize="12" Foreground="{DynamicResource DimTextBrush}"/>
+                                </StackPanel>
+                                <TextBlock Grid.Column="1" Text="{Binding Detail}" FontSize="12" HorizontalAlignment="Right"/>
+                            </Grid>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+                <DockPanel Margin="0,12,0,6">
+                    <Button DockPanel.Dock="Right" Style="{StaticResource ToolbarButton}" Click="PickScript">
+                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE8A5;" Style="{StaticResource CommandIcon}"/><TextBlock Text="选择脚本"/></StackPanel>
+                    </Button>
+                    <TextBlock Text="执行命令" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                </DockPanel>
+                <TextBox x:Name="CommandInput" Style="{StaticResource TextInput}" AcceptsReturn="True" TextWrapping="Wrap"
+                         VerticalScrollBarVisibility="Auto" VerticalContentAlignment="Top" MinHeight="82" MaxHeight="160"
+                         AutomationProperties.Name="执行命令" Margin="0,0,0,14"/>
+                <StackPanel x:Name="PortField">
+                    <TextBlock Text="端口（可留空）" FontWeight="SemiBold"/>
+                    <TextBox x:Name="PortInput" Style="{StaticResource TextInput}" Width="160" HorizontalAlignment="Left"
+                             AutomationProperties.Name="配置端口" Margin="0,6,0,14"/>
+                </StackPanel>
+                <Expander Header="项目图标" Style="{StaticResource SectionExpander}" IsExpanded="False" Margin="0,4,0,14">
+                    <StackPanel>
+                        <WrapPanel x:Name="GlyphChoices" Margin="0,10,0,10"/>
+                        <WrapPanel>
+                            <Button Style="{StaticResource ToolbarButton}" Click="UploadImage">
+                                <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE898;" Style="{StaticResource CommandIcon}"/><TextBlock Text="上传图片"/></StackPanel>
+                            </Button>
+                            <Button Style="{StaticResource ToolbarButton}" Click="PasteImage">
+                                <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE77F;" Style="{StaticResource CommandIcon}"/><TextBlock Text="粘贴图片"/></StackPanel>
+                            </Button>
+                            <Button Style="{StaticResource ToolbarButton}" Click="ClearImage">
+                                <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE74D;" Style="{StaticResource CommandIcon}"/><TextBlock Text="清除"/></StackPanel>
+                            </Button>
+                        </WrapPanel>
+                    </StackPanel>
+                </Expander>
+                <TextBlock x:Name="RunningNotice" TextWrapping="Wrap" Foreground="{DynamicResource WarningBrush}" Visibility="Collapsed"
+                           Text="项目正在运行。修改命令、目录、类型或端口前，请先停止；填写内容会保留。"/>
+            </StackPanel>
+        </ScrollViewer>
+    </DockPanel>
+</Window>

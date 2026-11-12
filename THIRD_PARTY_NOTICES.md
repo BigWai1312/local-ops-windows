@@ -39,11 +39,27 @@ OFL 1.1 允许字体与软件一同捆绑和再分发，前提是每份副本包
 
 ## 项目图像
 
-- `static/assets/console-app-icon.png`、`brand-mark.png`、`favicon-32.png`、`favicon.ico`、`apple-touch-icon.png` 与 `总控台.app/Contents/Resources/AppIcon.icns` 来自同一套品牌方向；派生图标由 `tools/gen_brand_assets.py` 生成。
-- 上述品牌素材由项目维护者在用户选定方向后，于 2026-07-23 在 Codex 中使用 OpenAI Image Generation `image_gen` 工具定向生成。本次工具调用未暴露底层模型版本，因此在 `ASSET_PROVENANCE.md` 中标为 `REVIEW_REQUIRED`。
+- `static/assets/console-app-icon.png`、`brand-mark.png`、`favicon-32.png`、`favicon.ico` 与 `apple-touch-icon.png` 来自同一套品牌方向；派生图标由 `tools/gen_brand_assets.py` 生成。
+- 上述品牌素材按上游记录由其维护者于 2026-07-23 使用 OpenAI Image Generation `image_gen` 工具定向生成；Windows 二开原样继承，未声称本机重新生成。具体模型版本未知。
 
-首次公开发行前，发布负责人必须归档原始输出、生成主体、当次适用条款和允许随本项目再分发的书面结论。若结论不支持当前发行方式，应在发布前替换素材并同步更新来源、修改记录、SHA-256 与状态。
+2026-11-12 的固定来源、C# 图标生成记录和官方条款复核见 `licenses/ASSET_REVIEW.md`。该记录区分自动来源审核与人工法律判断，保留模型未知、输出非独占等限制；素材改变时必须重新登记和复核。
 
 ## 开发期工具
 
-`tools/gen_brand_assets.py` 使用 `requirements-dev.txt` 精确锁定的 Pillow，并调用 macOS 自带的 `iconutil`；`tools/gen_icons.py` 由 vendored Lucide SVG 重新生成 `static/icons.js`。这些工具只用于重新生成已入库资源，不随总控台运行，也不是运行时依赖。更新版本时必须重新核对各自上游许可和来源记录。
+`tools/gen_brand_assets.py` 使用 `requirements-dev.txt` 精确锁定的 Pillow 生成 PNG/ICO；`tools/gen_icons.py` 由 vendored Lucide SVG 重新生成 `static/icons.js`。这些工具只用于重新生成已入库资源，不随本地运维台 Windows 运行，也不是运行时依赖。更新版本时必须重新核对各自上游许可和来源记录。
+
+## C# 安装版运行时
+
+2.1.0 使用 .NET 10 WPF，标准库后台与锚点由 PyInstaller 冻结。构建器从实际解析的 .NET 运行时 NuGet 包复制许可证与第三方声明，并从构建用 Python、PyInstaller 分发复制许可到安装目录的 `licenses/runtime/`。版本以随包 `LocalOpsWindows.Client.runtimeconfig.json` 为准。C# 安装包不包含 pywebview、pystray 或 WebView2。
+
+## 历史 WebView2 桌面壳
+
+2.0.2 及历史 `desktop.py` 宿主使用以下 Python 运行时组件。保留来源与许可供历史版本追溯；它们不是 2.1.0 C# 客户端的依赖：
+
+- `pywebview 6.2.1`：BSD 3-Clause，原文见 `licenses/pywebview-LICENSE.txt`。
+- `pystray 0.19.5`：LGPL-3.0-or-later，原文见 `licenses/pystray-COPYING.txt` 和 `licenses/pystray-LGPL-3.0.txt`。
+- `pythonnet 3.1.0`、`clr-loader 0.3.1`：MIT，原文见对应许可证文件。
+- `bottle 0.13.4`、`proxy-tools 0.1.0`、`six`：MIT，原文见对应许可证文件。
+- `Pillow`：Pillow 许可，原文见 `licenses/Pillow-LICENSE.txt`。
+
+WebView2 的浏览器运行时由 Microsoft Windows 组件提供，安装版不把运行时二进制重新分发到仓库。首次启动会检查系统 WebView2 Runtime；缺失时只显示安装提示，不自动打开外部浏览器。

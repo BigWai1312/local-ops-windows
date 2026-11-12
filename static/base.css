@@ -535,6 +535,61 @@
 }
 .side-stack { display: flex; flex-direction: column; gap: 14px; }
 
+/* ---------- Windows 桌面客户端 ---------- */
+html[data-shell="desktop"] .rail { width: 76px; }
+html[data-shell="desktop"] .rail-btn { min-height: 62px; }
+html[data-shell="desktop"] .topbar-inner {
+  max-width: none;
+  height: 54px;
+  padding-inline: 20px;
+}
+html[data-shell="desktop"] .side-nav { display: none; }
+html[data-shell="desktop"] .brand-text p { display: none; }
+html[data-shell="desktop"] .main-inner {
+  max-width: none;
+  padding: 0 20px 42px;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  gap: 18px;
+}
+html[data-shell="desktop"] .view-head {
+  align-items: center;
+  padding: 18px 0 16px;
+  gap: 18px;
+}
+html[data-shell="desktop"] .vh-overline,
+html[data-shell="desktop"] .view-head h2::after { display: none; }
+html[data-shell="desktop"] .view-head h2 {
+  font-size: 25px;
+  line-height: 1.2;
+}
+html[data-shell="desktop"] .vh-sub { margin-top: 5px; }
+html[data-shell="desktop"] .side-widgets { padding-top: 18px; }
+html[data-shell="desktop"] .app-grid {
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+}
+html[data-shell="desktop"] .modal {
+  max-height: calc(100vh - 40px);
+  border-radius: 8px;
+}
+html[data-shell="desktop"] .drawer { width: min(540px, 48vw); }
+html[data-shell="desktop"] .widget,
+html[data-shell="desktop"] .ov { border-radius: 8px; }
+
+@media (max-width: 1370px) {
+  html[data-shell="desktop"] .main-inner {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  html[data-shell="desktop"] .side-widgets { display: none; }
+}
+
+@media (max-width: 1080px) {
+  html[data-shell="desktop"] .topbar-inner { padding-inline: 16px; }
+  html[data-shell="desktop"] .main-inner { padding-inline: 16px; }
+  html[data-shell="desktop"] .view-head { align-items: flex-start; }
+  html[data-shell="desktop"] .cmdk-trigger { width: min(340px, 42vw); }
+  html[data-shell="desktop"] .drawer { width: min(500px, 60vw); }
+}
+
 /* ---------- 侧栏小部件 ---------- */
 .widget {
   border: 1px solid var(--line); border-radius: 12px;
@@ -716,6 +771,15 @@
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   max-width: 260px;
 }
+.set-update {
+  margin-top: 14px; padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.set-update-head {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
+}
+.set-update-version { color: var(--ink-2); font-size: 10px; }
+.set-update-actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
 
 .tips-text { margin: 0; font-size: 12px; line-height: 1.65; color: var(--ink-2); }
 .tips-ic { display: inline-flex; color: var(--amber); }

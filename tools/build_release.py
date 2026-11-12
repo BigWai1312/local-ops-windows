@@ -26,9 +26,20 @@ DEFAULT_DIST = ROOT / "dist"
 REQUIRED_LICENSES = (
     "licenses/Geist-OFL-1.1.txt",
     "licenses/Lucide-LICENSE.txt",
+    "licenses/pystray-COPYING.txt",
+    "licenses/pystray-LGPL-3.0.txt",
+    "licenses/pythonnet-LICENSE.txt",
+    "licenses/pywebview-LICENSE.txt",
+    "licenses/bottle-LICENSE.txt",
+    "licenses/clr-loader-LICENSE.txt",
+    "licenses/Pillow-LICENSE.txt",
+    "licenses/proxy-tools-LICENSE.txt",
+    "licenses/six-LICENSE.txt",
 )
 REQUIRED_PROJECT_DOCS = (
     "README.md",
+    "NOTICE.md",
+    "PLAN.md",
     "CHANGELOG.md",
     "LICENSE",
     "SECURITY.md",
@@ -44,14 +55,19 @@ INCLUDE = (
     "licenses",
     *REQUIRED_LICENSES,
     "server.py",
-    "start.command",
-    "总控台.app",
+    "desktop.py",
+    "updater.py",
+    "installer.py",
+    "start.bat",
+    "start_console_win.vbs",
     "static",
-    "docs",
     "tests",
     "tools",
     "requirements-dev.txt",
+    "requirements-build.txt",
     "Makefile",
+    "csharp",
+    ".github",
 )
 EXCLUDED_PARTS = {
     ".git",
@@ -63,6 +79,8 @@ EXCLUDED_PARTS = {
     ".vscode",
     "__pycache__",
     "build",
+    "bin",
+    "obj",
     "data",
     "dist",
     "htmlcov",
@@ -104,9 +122,8 @@ SENSITIVE_SUFFIXES = {
 }
 SAFE_ENV_SUFFIXES = {".example", ".sample", ".template"}
 EXECUTABLE_FILES = {
-    "start.command",
     "tools/build_release.py",
-    "总控台.app/Contents/MacOS/launcher",
+    "tools/build_installer.py",
 }
 SEMVER_RE = re.compile(
     r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
@@ -335,7 +352,7 @@ def validate_payload(files: list[Path]) -> list[ReleaseEntry]:
 
 
 def archive_prefix(release_version: str) -> str:
-    return f"总控台-{release_version}"
+    return f"local-ops-windows-{release_version}"
 
 
 def archive_mode(relative: Path) -> int:
@@ -496,7 +513,7 @@ def validate_output_dir(output_dir: Path) -> Path:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="构建并校验不含用户数据的总控台发行包")
+    parser = argparse.ArgumentParser(description="构建并校验 Local Ops Windows 发行包")
     parser.add_argument("--dist", type=Path, default=DEFAULT_DIST, help="输出目录")
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--check-only", action="store_true", help="只验证发行来源")
@@ -514,7 +531,7 @@ def main() -> int:
         return 0
 
     output_dir = validate_output_dir(args.dist)
-    output = output_dir / f"console-{release_version}.zip"
+    output = output_dir / f"local-ops-windows-{release_version}.zip"
     if args.verify_only:
         verify_archive(output, entries, release_version)
         checksum = verify_checksum(output)

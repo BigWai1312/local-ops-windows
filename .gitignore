@@ -1,5 +1,7 @@
-# macOS / editors
+# Windows / editors
 .DS_Store
+Thumbs.db
+Desktop.ini
 *.swp
 *.swo
 *~
@@ -31,3 +33,7 @@ release/
 *.zip
 *.tar.gz
 *.sha256
+
+# C# build outputs
+csharp/**/bin/
+csharp/**/obj/
