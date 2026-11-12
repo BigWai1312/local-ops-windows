@@ -78,8 +78,10 @@ jobs:
         shell: pwsh
         run: |
           python tools/build_release.py --dist dist
+          if ($LASTEXITCODE -ne 0) { throw 'First source build failed' }
           $first = (Get-FileHash dist\local-ops-windows-*.zip -Algorithm SHA256).Hash
           python tools/build_release.py --dist dist
+          if ($LASTEXITCODE -ne 0) { throw 'Second source build failed' }
           $second = (Get-FileHash dist\local-ops-windows-*.zip -Algorithm SHA256).Hash
           if ($first -ne $second) { throw 'release archive is not reproducible' }
           python tools/build_release.py --dist dist --verify-only
@@ -119,12 +121,15 @@ jobs:
       - name: Run release gates
         run: |
           python tools/check_privacy.py
+          if ($LASTEXITCODE -ne 0) { throw 'Release privacy scan failed' }
           python tools/check_project.py
+          if ($LASTEXITCODE -ne 0) { throw 'Release project checks failed' }
           python -m unittest discover -s tests -p "test_*.py" -v
 
       - name: Build source archive and installer
         run: |
           python tools/build_release.py --dist dist
+          if ($LASTEXITCODE -ne 0) { throw 'Release source build failed' }
           python tools/build_installer.py --output dist
 
       - name: Verify installed payload in isolated storage
