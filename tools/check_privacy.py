@@ -30,24 +30,29 @@ EMAIL_RE = re.compile(r"(?i)\b[A-Z0-9._%+-]+@([A-Z0-9.-]+\.[A-Z]{2,})\b")
 
 def iter_files():
     for path in ROOT.rglob("*"):
-        if not path.is_file() or any(part.casefold() in EXCLUDED_DIRS for part in path.parts):
-            continue
         relative = path.relative_to(ROOT)
+        if not path.is_file() or any(part.casefold() in EXCLUDED_DIRS for part in relative.parts[:-1]):
+            continue
         if (
             relative.parts[0].casefold() == "csharp"
             and any(part.casefold() in {"bin", "obj"} for part in relative.parts[1:-1])
         ):
             continue
-        if path.suffix.casefold() in TEXT_SUFFIXES or path.name in {"LICENSE", "Makefile", "VERSION"}:
+        if (
+            path.suffix.casefold() in TEXT_SUFFIXES
+            or path.name in {"LICENSE", "Makefile", "VERSION"}
+            or path.name.casefold() in SENSITIVE_NAMES
+        ):
             yield path
 
 
 def scan() -> list[str]:
     failures: list[str] = []
+    username = os.environ.get("USERNAME", "")
     local_markers = {
         value.casefold()
         for value in (
-            os.environ.get("USERNAME"),
+            username if username.casefold() not in PLACEHOLDER_USERS else None,
             os.environ.get("COMPUTERNAME"),
             str(Path.home()),
         )

@@ -8,6 +8,9 @@ on:
 permissions:
   contents: read
 
+env:
+  PYTHONUTF8: "1"
+
 jobs:
   windows-check:
     name: Windows / Python ${{ matrix.python-version }}
