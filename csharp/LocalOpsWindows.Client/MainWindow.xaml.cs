@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -229,8 +230,10 @@ public partial class MainWindow : Window
         {
             var selectedIds = AppsList.SelectedItems.OfType<AppSnapshot>()
                 .Select(x => x.Id).ToHashSet(StringComparer.Ordinal);
-            var apps = FilterApps(_state.Apps).ToList();
-            AppsList.ItemsSource = apps;
+            var apps = FilterApps(_state.Apps).OrderBy(app => app.Kind == "task" ? 1 : 0).ToList();
+            var grouped = new ListCollectionView(apps);
+            grouped.GroupDescriptions.Add(new PropertyGroupDescription(nameof(AppSnapshot.Kind)));
+            AppsList.ItemsSource = grouped;
             foreach (var app in apps.Where(x => selectedIds.Contains(x.Id)))
             {
                 AppsList.SelectedItems.Add(app);
@@ -958,13 +961,22 @@ public partial class MainWindow : Window
             if (install)
             {
                 UpdateStatusText.Text = "正在下载安装包…";
-                var directory = Path.Combine(Environment.GetFolderPath(
-                    Environment.SpecialFolder.LocalApplicationData), "LocalOpsWindows", "updates");
+                var directory = Path.Combine(ClientStorage.Root, "cache", "updates");
+                var temporary = Path.Combine(ClientStorage.Root, "cache", "temp");
+                Directory.CreateDirectory(temporary);
                 var path = await _updater.DownloadInstallerAsync(update, directory,
                     new Progress<int>(percent => UpdateStatusText.Text = $"下载安装包 {percent}%"), timeout.Token);
                 var start = new ProcessStartInfo(path) { UseShellExecute = false, WorkingDirectory = directory };
-                start.ArgumentList.Add("--update-pid");
-                start.ArgumentList.Add(Environment.ProcessId.ToString());
+                foreach (var argument in new[]
+                {
+                    "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
+                    $"/UPDATEPID={Environment.ProcessId}", $"/DIR={ClientStorage.Root}",
+                    "/LAUNCHAFTERUPDATE=1",
+                    IsAutostartEnabled() ? "/MERGETASKS=autostart" : "/MERGETASKS=!autostart",
+                })
+                    start.ArgumentList.Add(argument);
+                start.Environment["TEMP"] = temporary;
+                start.Environment["TMP"] = temporary;
                 using var installer = Process.Start(start)
                     ?? throw new InvalidOperationException("无法启动安装器。");
                 ExitFromButton(this, e);
@@ -1032,11 +1044,11 @@ public partial class MainWindow : Window
                 ["SoftBorderBrush"] = "#527079", ["AccentStrongBrush"] = "#A5E8D9",
                 ["InfoSoftBrush"] = "#304C60",
                 ["BorderBrush"] = "#4A5A60", ["TextBrush"] = "#F1F5F4",
-                ["MutedTextBrush"] = "#B6C2C4", ["DimTextBrush"] = "#8D9B9E",
-                ["AccentBrush"] = "#5DD3B4", ["AccentSoftBrush"] = "#25483F",
-                ["WarningBrush"] = "#F2B653", ["WarningSoftBrush"] = "#4C3B20",
-                ["DangerBrush"] = "#EF9298", ["DangerSoftBrush"] = "#4D292E",
-                ["InfoBrush"] = "#8DB9EE",
+                ["MutedTextBrush"] = "#D6DFE1", ["DimTextBrush"] = "#D0DADD",
+                ["AccentBrush"] = "#A5E8D9", ["AccentSoftBrush"] = "#25483F",
+                ["WarningBrush"] = "#FFE1A6", ["WarningSoftBrush"] = "#4C3B20",
+                ["DangerBrush"] = "#FFC0C5", ["DangerSoftBrush"] = "#4D292E",
+                ["InfoBrush"] = "#C2DDF8",
             }
             : new Dictionary<string, string>
             {
@@ -1049,10 +1061,10 @@ public partial class MainWindow : Window
                 ["SoftBorderBrush"] = "#BBD6DE", ["AccentStrongBrush"] = "#09665E",
                 ["InfoSoftBrush"] = "#D8EDF6",
                 ["BorderBrush"] = "#8DB8C4", ["TextBrush"] = "#18323A",
-                ["MutedTextBrush"] = "#55717A", ["DimTextBrush"] = "#7A929A",
-                ["AccentBrush"] = "#0D8075", ["AccentSoftBrush"] = "#CDEEE8",
-                ["WarningBrush"] = "#B36A1E", ["WarningSoftBrush"] = "#FCEBCF",
-                ["DangerBrush"] = "#B34B59", ["DangerSoftBrush"] = "#F8DEE3",
+                ["MutedTextBrush"] = "#49666E", ["DimTextBrush"] = "#405D65",
+                ["AccentBrush"] = "#09665E", ["AccentSoftBrush"] = "#CDEEE8",
+                ["WarningBrush"] = "#80500A", ["WarningSoftBrush"] = "#FCEBCF",
+                ["DangerBrush"] = "#963947", ["DangerSoftBrush"] = "#F8DEE3",
                 ["InfoBrush"] = "#286A91",
             };
 
@@ -1292,7 +1304,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        var compact = ActualWidth < 1250;
+        var compact = (ActualWidth > 0 ? ActualWidth : Width) < 1250;
         LaunchDetailColumn.Width = new GridLength(compact ? 0 : 290);
         LaunchDetailGap.Width = new GridLength(compact ? 0 : 16);
         LaunchDetailPanel.Visibility = compact ? Visibility.Collapsed : Visibility.Visible;
@@ -1520,7 +1532,7 @@ public partial class MainWindow : Window
     private void SetBackendStatus(string status, string metadata, string brushKey)
     {
         BackendStatusText.Text = status;
-        BackendStatusText.Foreground = FindResource(brushKey) as Brush;
+        BackendStatusText.SetResourceReference(TextBlock.ForegroundProperty, brushKey);
         BackendMetaText.Text = metadata;
     }
 
@@ -1531,7 +1543,7 @@ public partial class MainWindow : Window
             return null;
         }
         using var key = Registry.CurrentUser.OpenSubKey(SettingsKey);
-        return key?.GetValue(name) as string;
+        return key?.GetValue(name) as string ?? ClientStorage.Read(name);
     }
 
     private bool IsAutostartEnabled()
@@ -1553,12 +1565,7 @@ public partial class MainWindow : Window
     private static bool IsInstalledClient()
     {
         var executable = Environment.ProcessPath;
-        var installRoot = Path.Combine(Environment.GetFolderPath(
-            Environment.SpecialFolder.LocalApplicationData), "Programs", "LocalOpsWindows");
-        return !string.IsNullOrWhiteSpace(executable)
-            && Path.GetFullPath(executable).StartsWith(
-                Path.GetFullPath(installRoot) + Path.DirectorySeparatorChar,
-                StringComparison.OrdinalIgnoreCase);
+        return !string.IsNullOrWhiteSpace(executable) && ClientStorage.Installed;
     }
 
     private static void SelectComboTag(ComboBox combo, string tag)

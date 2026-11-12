@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Per-user installer, updater and uninstaller for Local Ops Windows.
 
-The frozen setup executable carries a hashed versioned C# and backend
-``payload`` directory. It deliberately installs under ``%LOCALAPPDATA%`` so
-normal users do not need elevation and existing Docker projects are untouched.
+Inno Setup owns the standard wizard, files, shortcuts and uninstaller.
+The maintenance helper validates paths and preserves installed user state.
 """
 
 from __future__ import annotations
@@ -41,12 +40,158 @@ CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 LEGACY_TASK_NAME = "Local Ops Windows"
 MANIFEST_NAME = "payload.json"
 CURRENT_NAME = "current.json"
+MARKER_NAME = "installation.json"
+SETTINGS_KEY = r"Software\LocalOpsWindows\Client"
+NATIVE_UNINSTALL_KEY = UNINSTALL_KEY + "_is1"
+MAINTENANCE_EXE = "LocalOpsWindows.Maintenance.exe"
+
+# Test distributions get separate registry identities baked into the binary.
+_identity_path = Path(getattr(sys, "_MEIPASS", Path(__file__).parent)) / "setup-identity.json"
+TEST_IDENTITY = None
+if getattr(sys, "frozen", False) and _identity_path.is_file():
+    TEST_IDENTITY = json.loads(_identity_path.read_text(encoding="utf-8")).get("testId")
+    if not re.fullmatch(r"[0-9a-f]{32}", str(TEST_IDENTITY)):
+        raise RuntimeError("Invalid installer test identity")
+    UNINSTALL_KEY = r"Software\LocalOpsWindows.Tests" + "\\" + TEST_IDENTITY + r"\LegacyUninstall"
+    SETTINGS_KEY = r"Software\LocalOpsWindows.Tests" + "\\" + TEST_IDENTITY + r"\Client"
+    NATIVE_UNINSTALL_KEY = ("Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\"
+                            + "LocalOpsWindows.Test." + TEST_IDENTITY + "_is1")
 STABLE_VERSION_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 
 
 def _hash(path: Path) -> str:
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def _assert_plain_tree(path: Path) -> None:
+    """Do not follow directory junctions or other reparse points during copy/delete."""
+    pending = [path]
+    while pending:
+        item = pending.pop()
+        if not os.path.lexists(item):
+            continue
+        if item.lstat().st_file_attributes & 0x400:
+            raise ValueError("目录包含链接或重解析点，操作已取消")
+        if item.is_dir():
+            pending.extend(item.iterdir())
+
+
+def validate_install_dir(path: Path) -> Path:
+    if not path.is_absolute():
+        raise ValueError("请选择绝对路径")
+    resolved = path.resolve()
+    forbidden = {Path(path.anchor).resolve(), Path.home().resolve()}
+    for name in ("SystemRoot", "ProgramFiles", "ProgramFiles(x86)", "APPDATA", "LOCALAPPDATA"):
+        if os.environ.get(name):
+            forbidden.add(Path(os.environ[name]).resolve())
+    if resolved in forbidden or any(parent.is_symlink() or parent.is_junction()
+                                     for parent in (path, *path.parents)):
+        raise ValueError("请选择独立的程序目录，不能使用系统目录、用户根目录或目录链接")
+    if resolved.exists() and any(resolved.iterdir()):
+        marker = resolved / MARKER_NAME
+        registered = installed_root()
+        if marker.exists():
+            if json.loads(marker.read_text(encoding="utf-8")).get("product") != PRODUCT_ID:
+                raise ValueError("目录不属于 Local Ops Windows")
+        elif not (registered and registered.resolve() == resolved
+                  and (resolved / SETUP_EXE).is_file()):
+            raise ValueError("目录非空，请选择空目录或本程序已有的安装目录")
+    for name in ("versions", "cache", "data", "logs", SETUP_EXE, CURRENT_NAME, MARKER_NAME):
+        _assert_plain_tree(resolved / name)
+    return resolved
+
+
+def installed_root() -> Path | None:
+    value = (_registry_snapshot(NATIVE_UNINSTALL_KEY).get("InstallLocation", (None, 0))[0]
+             or _registry_snapshot(UNINSTALL_KEY).get("InstallLocation", (None, 0))[0])
+    return Path(value) if value else None
+
+
+def prepare_native_install(update_pid: int | None = None) -> None:
+    validate_install_dir(INSTALL_DIR)
+    previous_root = installed_root()
+    if _registry_snapshot(NATIVE_UNINSTALL_KEY) and previous_root and previous_root.resolve() != INSTALL_DIR.resolve():
+        raise RuntimeError("升级请沿用已有安装目录；更换位置前请先卸载，项目数据不会删除")
+    if update_pid is not None and not _wait_for_pid(update_pid):
+        raise RuntimeError("旧版本进程未能退出，安装已取消")
+    _stop_installed_app()
+    if previous_root and previous_root.resolve() != INSTALL_DIR.resolve():
+        _stop_installed_app(previous_root)
+    INSTALL_DIR.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryFile(dir=INSTALL_DIR) as probe:
+        probe.write(b"write-test")
+    marker = INSTALL_DIR / MARKER_NAME
+    if not marker.exists():
+        marker.write_text(json.dumps({"product": PRODUCT_ID, "storageVersion": 1}), encoding="utf-8")
+
+
+def prepare_native_uninstall() -> None:
+    _removal_targets(INSTALL_DIR)
+    _assert_plain_tree(INSTALL_DIR)
+    _stop_installed_app()
+    # Inno removes its registered files, never an entire user-selected root.
+    cache = INSTALL_DIR / "cache"
+    if cache.exists():
+        shutil.rmtree(cache)
+
+
+def finalize_native_install(version_directory: str) -> None:
+    if not re.fullmatch(r"\d+\.\d+\.\d+-[0-9a-f]{12}", version_directory):
+        raise RuntimeError("版本目录无效")
+    payload = INSTALL_DIR / "versions" / version_directory
+    _assert_plain_tree(payload)
+    manifest = validate_payload(payload)
+    native = _registry_snapshot(NATIVE_UNINSTALL_KEY).get("InstallLocation", (None, 0))[0]
+    if not native or Path(native).resolve() != INSTALL_DIR.resolve():
+        raise RuntimeError("标准安装器尚未注册安装位置")
+    temporary = INSTALL_DIR / (CURRENT_NAME + ".new")
+    temporary.write_text(json.dumps({"version": manifest["version"],
+                                     "directory": "versions/" + version_directory}), encoding="utf-8")
+    os.replace(temporary, INSTALL_DIR / CURRENT_NAME)
+
+
+def migrate_user_data(source: Path | None) -> None:
+    if (INSTALL_DIR / "data" / "config.json").exists():
+        return
+    legacy = Path(os.environ.get("APPDATA") or Path.home()) / PRODUCT_ID
+    local = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / PRODUCT_ID
+    data = source / "data" if source and (source / "data/config.json").exists() else legacy
+    logs = source / "logs" if source and (source / "logs").exists() else local / "logs"
+    _assert_plain_tree(data)
+    _assert_plain_tree(logs)
+    preferences = {name: value for name, (value, _) in _registry_snapshot(SETTINGS_KEY).items()
+                   if name in {"Theme", "WindowBounds", "TaskNotifications", "MinimizeToTray"}
+                   and isinstance(value, str)}
+    if not data.exists() and not preferences:
+        return
+    if (data / "config.json").is_file():
+        json.loads((data / "config.json").read_text(encoding="utf-8"))
+    # Preserve originals and copy only durable state, never the instance lock.
+    with tempfile.TemporaryDirectory(prefix=".migration-", dir=INSTALL_DIR) as folder:
+        stage = Path(folder) / "data"
+        stage.mkdir()
+        for name in ("config.json", "config.json.bak", "client-settings.json"):
+            origin = data / name
+            if origin.is_file():
+                shutil.copy2(origin, stage / name)
+                if _hash(origin) != _hash(stage / name):
+                    raise RuntimeError("迁移时配置发生变化，请退出旧客户端后重试")
+        if (data / "icons").exists():
+            shutil.copytree(data / "icons", stage / "icons")
+        if preferences and not (stage / "client-settings.json").exists():
+            (stage / "client-settings.json").write_text(json.dumps(preferences), encoding="utf-8")
+        staged_logs = Path(folder) / "logs"
+        if logs.is_dir() and not (INSTALL_DIR / "logs").exists():
+            shutil.copytree(logs, staged_logs)
+        destination = INSTALL_DIR / "data"
+        if destination.exists():
+            if any(destination.iterdir()):
+                raise RuntimeError("目标数据目录非空，拒绝覆盖")
+            destination.rmdir()
+        os.replace(stage, destination)
+        if staged_logs.exists():
+            os.replace(staged_logs, INSTALL_DIR / "logs")
 
 
 def validate_payload(payload: Path) -> dict:
@@ -212,19 +357,19 @@ def _launch_main(background: bool) -> None:
         creationflags=flags, close_fds=True)
 
 
-def _stop_installed_app() -> None:
+def _stop_installed_app(root: Path | None = None) -> None:
     """Leave anchors and projects alive; stop only exact installed client/backend paths."""
+    root = root or INSTALL_DIR
     targets = [
         path for path in (
-            INSTALL_DIR / "LocalOpsWindows.exe",
-            INSTALL_DIR / NATIVE_APP_DIR / "LocalOpsWindows.exe",
-            _current_executable(),
-            *list((INSTALL_DIR / "versions").glob("*/" + MAIN_EXE)),
-            *list((INSTALL_DIR / "versions").glob("*/backend/LocalOpsWindowsBackend.exe")),
+            root / "LocalOpsWindows.exe",
+            root / NATIVE_APP_DIR / "LocalOpsWindows.exe",
+            *list((root / "versions").glob("*/" + MAIN_EXE)),
+            *list((root / "versions").glob("*/backend/LocalOpsWindowsBackend.exe")),
         ) if path.exists()
     ]
     targets = list(dict.fromkeys(path.resolve() for path in targets))
-    if any(not path.is_relative_to(INSTALL_DIR.resolve()) for path in targets):
+    if any(not path.is_relative_to(root.resolve()) for path in targets):
         raise RuntimeError("拒绝停止安装目录外的程序")
     if not targets:
         return
@@ -264,10 +409,32 @@ def _stop_installed_app() -> None:
     raise RuntimeError("旧版本文件仍在使用，安装已取消")
 
 
-def _schedule_remove(path: Path) -> subprocess.Popen:
-    if path.resolve() != INSTALL_DIR.resolve() or path.name != PRODUCT_ID:
+def _removal_targets(path: Path) -> list[Path]:
+    marker = path / MARKER_NAME
+    if (path.resolve() != INSTALL_DIR.resolve() or not marker.is_file()
+            or json.loads(marker.read_text(encoding="utf-8")).get("product") != PRODUCT_ID):
         raise RuntimeError("拒绝删除产品安装目录之外的路径")
-    script = f"Start-Sleep -Milliseconds 700; Remove-Item -LiteralPath {_ps_quote(path)} -Recurse -Force -ErrorAction SilentlyContinue"
+    validate_install_dir(path)
+    registered = installed_root()
+    if registered and registered.resolve() != path.resolve():
+        raise RuntimeError("此目录不是当前注册的安装位置，拒绝卸载其他位置的程序")
+    # Remove only program-owned paths; data, logs, and unknown user files remain.
+    targets = [path / name for name in ("versions", "cache", SETUP_EXE, CURRENT_NAME,
+                                       "LocalOpsWindows.exe", ANCHOR_EXE, NATIVE_APP_DIR)]
+    if any(target.is_symlink() or target.is_junction()
+           or not target.resolve().is_relative_to(path.resolve()) for target in targets):
+        raise RuntimeError("拒绝删除指向安装目录外的路径")
+    for target in targets:
+        _assert_plain_tree(target)
+    return targets
+
+
+def _schedule_remove(path: Path) -> subprocess.Popen:
+    targets = _removal_targets(path)
+    literals = ",".join(_ps_quote(target) for target in targets)
+    script = ("Start-Sleep -Milliseconds 1000;"
+              f"foreach($target in @({literals})) {{"
+              "if(Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction Stop } }")
     return subprocess.Popen(
         ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -287,10 +454,13 @@ def _registry_snapshot(path: str) -> dict:
 
 
 def install(update_pid: int | None = None, silent: bool = False,
-            launch: bool = True) -> None:
+            launch: bool = True, migrate: bool = False) -> None:
     payload = _payload_dir()
     manifest = validate_payload(payload)
+    validate_install_dir(INSTALL_DIR)
+    previous_root = installed_root()
     INSTALL_DIR.mkdir(parents=True, exist_ok=True)
+    (INSTALL_DIR / MARKER_NAME).write_text(json.dumps({"product": PRODUCT_ID, "storageVersion": 1}), encoding="utf-8")
     version_dir = INSTALL_DIR / "versions" / (manifest["version"] + "-" + _hash(payload / MANIFEST_NAME)[:12])
     version_dir.parent.mkdir(parents=True, exist_ok=True)
     if not version_dir.exists():
@@ -304,7 +474,11 @@ def install(update_pid: int | None = None, silent: bool = False,
     if update_pid is not None and not _wait_for_pid(update_pid):
         raise RuntimeError("旧版本进程未能退出，安装已取消")
     _stop_installed_app()
-    state_files = [INSTALL_DIR / CURRENT_NAME, INSTALL_DIR / SETUP_EXE, *_shortcut_paths()]
+    if previous_root and previous_root.resolve() != INSTALL_DIR.resolve():
+        _stop_installed_app(previous_root)
+    if migrate:
+        migrate_user_data(previous_root)
+    state_files = [INSTALL_DIR / CURRENT_NAME, INSTALL_DIR / SETUP_EXE, INSTALL_DIR / MARKER_NAME, *_shortcut_paths()]
     previous = {path: path.read_bytes() if path.exists() else None for path in state_files}
     run = _registry_snapshot(RUN_KEY).get(PRODUCT_ID)
     uninstall = _registry_snapshot(UNINSTALL_KEY)
@@ -354,6 +528,7 @@ def install(update_pid: int | None = None, silent: bool = False,
 
 
 def uninstall(silent: bool = False) -> subprocess.Popen:
+    _removal_targets(INSTALL_DIR)
     _stop_installed_app()
     _set_autostart(False)
     _delete_uninstall_entry()
@@ -371,22 +546,56 @@ def _message_box(message: str) -> None:
 
 
 def main() -> int:
+    global INSTALL_DIR
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--uninstall", action="store_true")
     parser.add_argument("--update-pid", type=int)
     parser.add_argument("--silent", action="store_true")
     parser.add_argument("--no-launch", action="store_true")
     parser.add_argument("--verify-only", action="store_true")
+    parser.add_argument("--install-dir", type=Path)
+    parser.add_argument("--migrate-data", action="store_true")
+    parser.add_argument("--native-prepare", action="store_true")
+    parser.add_argument("--native-finalize")
+    parser.add_argument("--native-uninstall", action="store_true")
+    parser.add_argument("--error-file", type=Path)
     args, _ = parser.parse_known_args()
     try:
-        if args.verify_only:
+        if args.native_prepare or args.native_finalize or args.native_uninstall:
+            if args.install_dir is None:
+                raise ValueError("维护操作需要明确的安装目录")
+            INSTALL_DIR = args.install_dir
+            if args.native_prepare:
+                prepare_native_install(args.update_pid)
+            elif args.native_finalize:
+                finalize_native_install(args.native_finalize)
+            else:
+                prepare_native_uninstall()
+        elif args.verify_only:
             validate_payload(_payload_dir())
-        elif args.uninstall:
-            uninstall(args.silent)
         else:
-            install(args.update_pid, args.silent, launch=not args.no_launch)
+            current = installed_root()
+            INSTALL_DIR = args.install_dir or current or INSTALL_DIR
+            if args.uninstall:
+                if not args.install_dir and getattr(sys, "frozen", False):
+                    INSTALL_DIR = Path(sys.executable).resolve().parent
+                validate_install_dir(INSTALL_DIR)
+                if not args.silent:
+                    answer = ctypes.windll.user32.MessageBoxW(
+                        0, f"卸载 {INSTALL_DIR} 中的程序？\n项目数据和日志将保留在原目录。",
+                        "卸载 Local Ops Windows", 0x24)
+                    if answer != 6:
+                        return 0
+                uninstall(args.silent)
+            elif not args.silent and args.update_pid is None:
+                raise RuntimeError("请运行 LocalOpsWindows-Setup.exe 标准安装向导")
+            else:
+                install(args.update_pid, args.silent, launch=not args.no_launch,
+                        migrate=args.migrate_data or args.update_pid is not None)
         return 0
     except Exception as exc:
+        if args.error_file:
+            args.error_file.write_text(str(exc), encoding="utf-8-sig")
         if not args.silent:
             _message_box(str(exc))
         return 1

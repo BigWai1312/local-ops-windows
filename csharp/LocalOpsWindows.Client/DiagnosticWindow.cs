@@ -31,6 +31,7 @@ internal sealed class DiagnosticWindow : Window
         MinHeight = 400;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         ShowInTaskbar = false;
+        SetResourceReference(ForegroundProperty, "TextBrush");
         SetResourceReference(BackgroundProperty, "PopupBrush");
         var root = new DockPanel { Margin = new Thickness(24) };
         var footer = new WrapPanel { HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0,16,0,0) };

@@ -26,6 +26,27 @@ def _free_port():
 
 @unittest.skipIf(not server.IS_WIN, "Windows 适配层专属测试")
 class WindowsParsingTests(unittest.TestCase):
+    def test_management_ports_fall_back_and_preserve_restart_preference(self):
+        for preferred in (None, 11003):
+            attempted = []
+            instance = object()
+
+            def bind(address, *_args):
+                attempted.append(address)
+                if address[1] < server.PORT_FALLBACK_START:
+                    raise PermissionError("Reserved port fixture")
+                return instance
+
+            with mock.patch.object(server, "_ensure_private_dir"), \
+                    mock.patch.object(server, "start_log_maintenance"), \
+                    mock.patch.object(server, "Config"), \
+                    mock.patch.object(server, "ConsoleServer", side_effect=bind):
+                result, port = server.create_console_server(preferred)
+            self.assertIs(result, instance)
+            self.assertEqual(port, preferred or 11000)
+            self.assertTrue(all(address[0] == "127.0.0.1" for address in attempted))
+            self.assertEqual(len(attempted), 1 if preferred else 11)
+
     def test_netstat_parse(self):
         text = (
             "\n"

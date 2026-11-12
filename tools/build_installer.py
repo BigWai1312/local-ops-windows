@@ -8,6 +8,7 @@ import hashlib
 import importlib.metadata
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -29,6 +30,7 @@ OPTIONAL_MODULES = (
     "gi",
     "gtk",
     "wx",
+    "tkinter",
 )
 
 
@@ -45,11 +47,13 @@ def version() -> str:
 
 
 def build_binary(script: Path, name: str, work: Path, output: Path,
-                 extra: list[str] | None = None, onefile: bool = True) -> Path:
+                 extra: list[str] | None = None, onefile: bool = True,
+                 console: bool = False) -> Path:
     build_root = work / name
     build_root.mkdir(parents=True, exist_ok=True)
     command = PYINSTALLER + [
-        "--noconfirm", "--clean", "--onefile" if onefile else "--onedir", "--windowed",
+        "--noconfirm", "--clean", "--onefile" if onefile else "--onedir",
+        "--console" if console else "--windowed",
         "--name", name, "--distpath", str(output),
         "--workpath", str(build_root / "work"), "--specpath", str(build_root),
     ]
@@ -101,7 +105,42 @@ def copy_runtime_licenses(payload: Path, work: Path) -> None:
     shutil.copy2(pyinstaller_license, destination / "PyInstaller-COPYING.txt")
 
 
-def build(output_dir: Path) -> list[Path]:
+def find_inno_compiler(explicit: Path | None = None) -> Path:
+    candidates = [explicit] if explicit else [
+        Path(os.environ["INNO_SETUP_COMPILER"]) if os.environ.get("INNO_SETUP_COMPILER") else None,
+        Path(shutil.which("ISCC.exe")) if shutil.which("ISCC.exe") else None,
+        *(Path(os.environ[name]) / folder / "ISCC.exe"
+          for name in ("ProgramFiles(x86)", "ProgramFiles") if os.environ.get(name)
+          for folder in ("Inno Setup 7", "Inno Setup 6")),
+        *(Path(os.environ["LOCALAPPDATA"]) / "Programs" / folder / "ISCC.exe"
+          for folder in ("Inno Setup 7", "Inno Setup 6") if os.environ.get("LOCALAPPDATA")),
+    ]
+    if explicit is None and os.name == "nt":
+        import winreg
+        for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+            for view in (winreg.KEY_WOW64_64KEY, winreg.KEY_WOW64_32KEY):
+                for major in (7, 6):
+                    try:
+                        with winreg.OpenKey(hive,
+                                rf"Software\Microsoft\Windows\CurrentVersion\Uninstall\Inno Setup {major}_is1",
+                                0, winreg.KEY_READ | view) as key:
+                            location = winreg.QueryValueEx(key, "InstallLocation")[0]
+                            candidates.append(Path(location) / "ISCC.exe")
+                    except FileNotFoundError:
+                        pass
+    for candidate in candidates:
+        if candidate and candidate.is_file():
+            return candidate.resolve()
+    raise RuntimeError(
+        "找不到 Inno Setup 编译器 ISCC.exe。请安装 Inno Setup 6.4+ 或 7，"
+        "然后通过 --iscc 指定编译器，或设置 INNO_SETUP_COMPILER。不会生成旧式安装包作为替代。")
+
+
+def build(output_dir: Path, compiler: Path | None = None,
+          test_identity: str | None = None) -> list[Path]:
+    compiler = find_inno_compiler(compiler)
+    if test_identity is not None and not re.fullmatch(r"[0-9a-f]{32}", test_identity):
+        raise ValueError("Installer test identity must be a 32-character lowercase hexadecimal ID")
     output_dir.mkdir(parents=True, exist_ok=True)
     work = ROOT / "build" / "csharp-installer"
     if not work.resolve().is_relative_to((ROOT / "build").resolve()):
@@ -125,7 +164,7 @@ def build(output_dir: Path) -> list[Path]:
     shutil.copytree(backend.parent, payload / "backend")
     anchor = build_binary(
         ROOT / "tools" / "win_anchor.py", "LocalOpsWindowsAnchor", work,
-        temp_dist)
+        temp_dist, console=True)
     shutil.copy2(anchor, payload / "backend" / anchor.name)
     for name in ("LICENSE", "NOTICE.md", "THIRD_PARTY_NOTICES.md"):
         shutil.copy2(ROOT / name, payload / name)
@@ -142,10 +181,30 @@ def build(output_dir: Path) -> list[Path]:
     sys.path.insert(0, str(ROOT))
     from installer import validate_payload
     validate_payload(payload)
-    setup = build_binary(
-        ROOT / "installer.py", "LocalOpsWindows-Setup", work, temp_dist,
-        ["--icon", str(ROOT / "csharp/LocalOpsWindows.Client/Assets/local-ops.ico"),
-         "--add-data", f"{payload};payload"])
+    maintenance_options = [
+        "--icon", str(ROOT / "csharp/LocalOpsWindows.Client/Assets/local-ops.ico"),
+    ]
+    if test_identity is not None:
+        identity_path = work / "setup-identity.json"
+        identity_path.write_text(json.dumps({"testId": test_identity}), encoding="utf-8")
+        maintenance_options += ["--add-data", f"{identity_path};."]
+    maintenance = build_binary(
+        ROOT / "installer.py", "LocalOpsWindows.Maintenance", work, temp_dist,
+        maintenance_options)
+    version_directory = manifest["version"] + "-" + sha256(payload / "payload.json")[:12]
+    command = [str(compiler),
+               f"/DProjectRoot={ROOT}", f"/DPayloadDirectory={payload}",
+               f"/DMaintenanceExe={maintenance}", f"/DProductVersion={manifest['version']}",
+               f"/DVersionDirectory={version_directory}", f"/DOutputDirectory={temp_dist}"]
+    if test_identity is not None:
+        command += [f"/DProductId=LocalOpsWindows.Test.{test_identity}",
+                    f"/DProductTitle=Local Ops Windows Test {test_identity}",
+                    f"/DTestIdentity={test_identity}"]
+    command.append(str(ROOT / "tools/installer.iss"))
+    run(command)
+    setup = temp_dist / "LocalOpsWindows-Setup.exe"
+    if not setup.is_file():
+        raise RuntimeError("Inno Setup did not produce the standard installer")
 
     artifacts = []
     for source in (setup,):
@@ -154,6 +213,11 @@ def build(output_dir: Path) -> list[Path]:
         checksum = output_dir / (source.name + ".sha256")
         checksum.write_text(f"{sha256(destination)}  {destination.name}\n", encoding="utf-8")
         artifacts.extend((destination, checksum))
+    build_record = output_dir / "LocalOpsWindows.SetupBuild.json"
+    build_record.write_text(json.dumps({
+        "format": "inno", "testId": test_identity,
+        "sha256": sha256(output_dir / setup.name), "versionDirectory": version_directory,
+    }, indent=2) + "\n", encoding="utf-8")
     resource = output_dir / "LocalOpsWindows.Resources.json"
     shutil.copy2(ROOT / "csharp/LocalOpsWindows.Client/resources.json", resource)
     resource_data = json.loads(resource.read_text(encoding="utf-8"))
@@ -176,8 +240,10 @@ def build(output_dir: Path) -> list[Path]:
 def main() -> int:
     parser = argparse.ArgumentParser(description="构建 Local Ops Windows 安装包")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--iscc", type=Path, help="Path to an existing Inno Setup compiler")
+    parser.add_argument("--test-identity", help="Isolated installer identity for background smoke tests")
     args = parser.parse_args()
-    build(args.output.resolve())
+    build(args.output.resolve(), args.iscc, args.test_identity)
     return 0
 
 

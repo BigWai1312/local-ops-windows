@@ -1,5 +1,5 @@
 # 本地运维台 Windows
-`Local Ops Windows` 是一个面向 Windows 10/11 x64 的本地服务监控与任务启动台。2.1.0 安装版使用 C# / WPF 原生窗口，随包提供 .NET 与 Python 后台，不依赖 WebView2。
+`Local Ops Windows` 是一个面向 Windows 10/11 x64 的本地服务监控与任务启动台。2.1.1 安装版使用 C# / WPF 原生窗口，随包提供 .NET 与 Python 后台，不依赖 WebView2。
 
 > 当前版本处于 Preview / Alpha。它可以执行用户保存的本地命令，不应暴露到公网、反向代理、端口映射或不受信任的用户环境。
 
@@ -42,15 +42,15 @@
 
 ## 安装版
 
-从个人仓库的 GitHub Release 下载 `LocalOpsWindows-Setup.exe`，双击后按当前用户安装到：
+从个人仓库的 GitHub Release 下载 `LocalOpsWindows-Setup.exe`，双击后可选择安装目录，默认位置为：
 
 ```text
 %LOCALAPPDATA%\Programs\LocalOpsWindows
 ```
 
-安装器会创建开始菜单和桌面快捷方式，并默认写入当前用户的开机自启项。若检测到旧版源码部署使用的同名计划任务 `Local Ops Windows`，安装器会删除该任务，避免登录时重复启动。它不要求管理员权限，也不会修改 Docker 项目、系统服务或已有端口。卸载可从 Windows“应用和功能”进入，或运行安装目录中的 `LocalOpsWindows-Setup.exe --uninstall`。
+安装向导会创建开始菜单快捷方式，可自行勾选桌面快捷方式和登录启动，默认不启用这两项。它不要求管理员权限，也不会修改 Docker 项目、系统服务或已有端口。卸载可从 Windows“应用和功能”进入，或运行安装目录中的 `unins000.exe`。
 
-安装完成后，双击开始菜单或桌面快捷方式会打开客户端；开机自启使用隐藏窗口与通知区域模式。安装器先校验全部文件，再写入独立的 `versions/<版本>-<摘要>/` 目录，通过 `current.json` 和快捷方式切换版本。切换失败时恢复原快捷方式、注册表和当前版本；旧版本与用户配置不会被覆盖删除。
+安装完成后，双击开始菜单或桌面快捷方式会打开客户端；开机自启使用隐藏窗口与通知区域模式。安装器先校验全部文件，再写入独立的 `versions/<版本>-<摘要>/` 目录，通过 `current.json` 和快捷方式切换版本。同目录覆盖升级会保留 `data`、`logs` 和 `cache`；升级时沿用已选目录，切换目录需先卸载。卸载不会删除用户数据与日志。
 
 当前公开安装包未做商业代码签名，Windows SmartScreen 可能显示“未知发布者”。Release 同时提供 `.sha256` 文件；安装前可用 `Get-FileHash` 核对，但这不能替代正式代码签名。
 
@@ -79,7 +79,7 @@ dotnet run --project csharp/LocalOpsWindows.Client -- --demo
 py -3 server.py --no-browser --preferred-port 9603
 ```
 
-桌面客户端会在 `127.0.0.1:9600-9609` 的一个空闲端口连接或启动标准库后台，通过 HTTP API 读取数据。`static/` 网页版保留作为兼容及开发入口；`desktop.py` 是历史 WebView2 宿主，不进入 C# 安装版。
+桌面客户端优先使用 `127.0.0.1:9600-9609`，若该端口段被 Windows 保留或占用则回退到 `11000-11009`，连接或启动标准库后台并通过 HTTP API 读取数据。`static/` 网页版保留作为兼容及开发入口；`desktop.py` 是历史 WebView2 宿主，不进入 C# 安装版。
 
 安装版支持 `LocalOpsWindows.Client.exe --background`，供开机自启使用；普通启动不加该参数会打开桌面客户端窗口。
 

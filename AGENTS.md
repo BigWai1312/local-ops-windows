@@ -6,9 +6,9 @@
 - 产品名：本地运维台 Windows / Local Ops Windows。
 - 目标平台：Windows 10/11 x64。
 - Python 3.12+，运行时只使用标准库。
-- 后端仅绑定 `127.0.0.1`，端口从 9600 到 9609 递增尝试。
-- 配置目录：`%APPDATA%\LocalOpsWindows`。
-- 日志目录：`%LOCALAPPDATA%\LocalOpsWindows\logs`。
+- 后端仅绑定 `127.0.0.1`，优先尝试 9600-9609，冲突时回退到 11000-11009。
+- 源码运行配置目录：`%APPDATA%\LocalOpsWindows`；日志目录：`%LOCALAPPDATA%\LocalOpsWindows\logs`。
+- 安装版配置、日志和缓存使用用户所选安装根目录下的 `data`、`logs` 和 `cache`。
 - 常规启停只控制本程序启动且 token 校验通过的进程树，不认领外部进程。按用户要求，C# 客户端提供独立的端口冲突手动强停入口，必须显示真实目标并二次确认。
 
 ## 关键文件

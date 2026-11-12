@@ -244,6 +244,7 @@ APP_VERSION, VERSION_LOAD_ERROR = read_project_version()
 HOST = "127.0.0.1"
 PORT_START = 9600
 PORT_TRIES = 10
+PORT_FALLBACK_START = 11000
 SUBPROCESS_TIMEOUT = 5          # lsof/ps 等子进程超时（秒）
 MAX_ICON_BYTES = 5 * 1024 * 1024
 MAX_JSON_BYTES = 1 * 1024 * 1024
@@ -5074,7 +5075,8 @@ def create_console_server(preferred_port=None):
     cfg = Config(CONFIG_PATH)
 
     server, port = None, None
-    candidates = list(range(PORT_START, PORT_START + PORT_TRIES))
+    candidates = (list(range(PORT_START, PORT_START + PORT_TRIES))
+                  + list(range(PORT_FALLBACK_START, PORT_FALLBACK_START + PORT_TRIES)))
     if isinstance(preferred_port, int) and preferred_port in candidates:
         candidates.remove(preferred_port)
         candidates.insert(0, preferred_port)
@@ -5086,8 +5088,7 @@ def create_console_server(preferred_port=None):
         except OSError:
             continue
     if server is None:
-        print("错误：端口 %d-%d 均被占用，无法启动。" %
-              (PORT_START, PORT_START + PORT_TRIES - 1))
+        print("错误：管理端口均不可用，无法启动。")
         sys.exit(1)
     return server, port
 

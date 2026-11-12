@@ -86,6 +86,11 @@ public sealed class BackendSupervisor : IAsyncDisposable
             startInfo.RedirectStandardError = true;
             startInfo.Environment["PYTHONDONTWRITEBYTECODE"] = "1";
             startInfo.Environment["PYTHONUTF8"] = "1";
+            startInfo.Environment["CONSOLE_DATA_DIR"] = Path.Combine(ClientStorage.Root, "data");
+            startInfo.Environment["CONSOLE_LOG_DIR"] = Path.Combine(ClientStorage.Root, "logs");
+            Directory.CreateDirectory(ClientStorage.Temporary);
+            startInfo.Environment["TEMP"] = ClientStorage.Temporary;
+            startInfo.Environment["TMP"] = ClientStorage.Temporary;
 
             _ownedProcess = Process.Start(startInfo)
                 ?? throw new InvalidOperationException("无法启动本地运维台后台进程。");
@@ -185,7 +190,7 @@ public sealed class BackendSupervisor : IAsyncDisposable
     private async Task<BackendCandidate> FindProductAsync(
         CancellationToken cancellationToken, int? expectedPid = null)
     {
-        for (var port = 9600; port <= 9609; port++)
+        foreach (var port in Enumerable.Range(9600, 10).Concat(Enumerable.Range(11000, 10)))
         {
             try
             {

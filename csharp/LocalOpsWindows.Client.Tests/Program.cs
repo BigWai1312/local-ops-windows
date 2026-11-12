@@ -4,8 +4,10 @@ using System.Text;
 using System.Text.Json;
 using System.Reflection;
 using System.Diagnostics;
+using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Data;
 using System.Net.Sockets;
 using LocalOpsWindows.Client;
 
@@ -13,6 +15,13 @@ if (args.Contains("--idle-worker"))
 {
     Console.WriteLine("ready");
     await Task.Delay(Timeout.Infinite);
+    return;
+}
+
+if (args.Contains("--offscreen-ui"))
+{
+    try { await UiLayoutTests.RunAsync(); }
+    catch (Exception ex) { Console.Error.WriteLine(ex); Environment.ExitCode = 1; }
     return;
 }
 
@@ -28,6 +37,7 @@ if (args.Contains("--port-worker"))
 
 var checks = new List<(string Name, Func<Task> Run)>
 {
+    ("installed data root follows the selected directory", () => { TestStorageRoot(); return Task.CompletedTask; }),
     ("GitHub updates, download integrity and resource rollback", ReleaseUpdaterTests.RunAsync),
     ("state contract labels", () =>
     {
@@ -48,6 +58,7 @@ var checks = new List<(string Name, Func<Task> Run)>
     ("failed mutations are never replayed", TestMutationFailure),
     ("shutdown cleans only the owned startup process", TestOwnedStartupDisposal),
     ("port conflict stop verifies identity and releases fixture ports", TestPortConflictStop),
+    ("H5 layout, aligned controls and accessible themes without desktop windows", TestOffscreenUi),
     ("WPF input text remains visible", TestInputLayout),
 };
 
@@ -74,6 +85,20 @@ static void TestActualPorts()
     Assert(app.StatusLabel == "失败" && app.ToggleLabel == "运行" && app.UptimeLabel.Contains("00:25"),
         "legacy task result has exit code and duration");
     Assert(AppSnapshot.FormatDuration(90061) == "1.01:01:01", "multi-day duration must not wrap");
+}
+
+static void TestStorageRoot()
+{
+    var root = Path.Combine(Path.GetTempPath(), "localops-storage-" + Guid.NewGuid().ToString("N"));
+    var version = Path.Combine(root, "versions", "2.1.1-fixture");
+    Directory.CreateDirectory(version);
+    try
+    {
+        File.WriteAllText(Path.Combine(root, "installation.json"), """{"product":"LocalOpsWindows"}""");
+        Assert(ClientStorage.ResolveRoot(version) == root,
+            "versioned installs keep mutable data beside the chosen installation root");
+    }
+    finally { Directory.Delete(root, recursive: true); }
 }
 
 static void TestMonitorSession()
@@ -121,6 +146,31 @@ foreach (var check in checks)
 {
     await check.Run();
     Console.WriteLine($"PASS {check.Name}");
+}
+
+static async Task TestOffscreenUi()
+{
+    var start = new ProcessStartInfo(Environment.ProcessPath!)
+    {
+        UseShellExecute = false, CreateNoWindow = true,
+        RedirectStandardOutput = true, RedirectStandardError = true,
+    };
+    if (Path.GetFileNameWithoutExtension(start.FileName) == "dotnet")
+        start.ArgumentList.Add(Assembly.GetExecutingAssembly().Location);
+    start.ArgumentList.Add("--offscreen-ui");
+    using var worker = Process.Start(start)!;
+    var output = worker.StandardOutput.ReadToEndAsync();
+    var error = worker.StandardError.ReadToEndAsync();
+    try
+    {
+        await worker.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(60));
+        Assert(worker.ExitCode == 0, $"offscreen UI worker: {await output}\n{await error}");
+        Console.Write(await output);
+    }
+    finally
+    {
+        if (!worker.HasExited) worker.Kill(entireProcessTree: false);
+    }
 }
 
 static void TestStateContract()
@@ -237,10 +287,10 @@ static async Task TestBackendDiscovery()
     await using var supervisor = new BackendSupervisor(handler);
     Assert(await supervisor.StartAsync(CancellationToken.None) == 9607, "initial discovery");
     Assert(!supervisor.OwnsProcess, "attached backend is not owned");
-    port = 9609;
+    port = 11000;
     var ports = await Task.WhenAll(supervisor.StartAsync(CancellationToken.None),
         supervisor.StartAsync(CancellationToken.None));
-    Assert(ports.All(value => value == 9609), "rediscovery follows changed port");
+    Assert(ports.All(value => value == 11000), "rediscovery follows changed port into fallback range");
     using var canceled = new CancellationTokenSource();
     canceled.Cancel();
     try
@@ -386,6 +436,8 @@ static async Task TestPortConflictStop()
             Reject(() => (target with { ImagePath = "wrong.exe" }).Stop(), "stop rechecks image path");
             Reject(() => PortProcess.Inspect(9600), "management ports cannot be targeted");
             Reject(() => (target with { Port = 9600 }).Stop(), "direct stop rejects management ports");
+            Reject(() => PortProcess.Inspect(11000), "fallback management ports cannot be targeted");
+            Reject(() => (target with { Port = 11000 }).Stop(), "direct stop rejects fallback management ports");
             target.Stop();
             await worker.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(3));
             Assert(worker.HasExited, "only our fixture process was terminated");

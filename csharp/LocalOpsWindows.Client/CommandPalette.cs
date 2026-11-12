@@ -17,6 +17,7 @@ internal sealed class CommandPalette : Window
         MinHeight = 300;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         ShowInTaskbar = false;
+        SetResourceReference(ForegroundProperty, "TextBrush");
         SetResourceReference(BackgroundProperty, "PopupBrush");
         var root = new DockPanel { Margin = new Thickness(18) };
         var search = new TextBox { Style = (Style)FindResource("TextInput"), Tag = "搜索项目或操作", Margin = new Thickness(0,0,0,12) };
