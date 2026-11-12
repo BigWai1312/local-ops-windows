@@ -89,7 +89,7 @@ public sealed class LastExitSnapshot
     [JsonPropertyName("status")] public string? Status { get; set; }
     [JsonPropertyName("durationSec")] public double? DurationSec { get; set; }
     [JsonPropertyName("at")] public JsonElement At { get; set; }
-    [JsonPropertyName("code")] public int? Code { get; set; }
+    [JsonPropertyName("code")] public long? Code { get; set; }
     [JsonIgnore] public string? EffectiveStatus => Status ?? (Code is null ? null : Code == 0 ? "succeeded" : "failed");
 }
 

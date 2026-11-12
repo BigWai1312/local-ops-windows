@@ -201,6 +201,18 @@ static async Task TestApiState()
     using var api = new ApiClient(9600, new StubHandler("""{"apps":[],"services":[],"watched":[],"watchedKeywords":[]}"""));
     var state = await api.GetStateAsync(CancellationToken.None);
     Assert(state.Apps.Count == 0 && state.Services.Count == 0, "empty state");
+    foreach (long? code in new long?[] { null, 0, 7, 130, -1, int.MinValue, int.MaxValue, 3221225786, uint.MaxValue })
+    {
+        var json = JsonSerializer.Serialize(new { apps = new[] { new { lastExit = new { code } } } });
+        using var historicalApi = new ApiClient(9600, new StubHandler(json));
+        var historical = await historicalApi.GetStateAsync(CancellationToken.None);
+        var app = historical.Apps.Single();
+        Assert(app.LastExit!.Code == code, "exit code is preserved without truncation");
+        Assert(app.LastExit.EffectiveStatus == (code is null ? null : code == 0 ? "succeeded" : "failed"),
+            "signed and unsigned Windows exit codes retain their status");
+        if (code is not null)
+            Assert(app.UptimeLabel.Contains(code.Value.ToString()), "full exit code is visible");
+    }
 }
 
 static async Task TestBackendDiscovery()
