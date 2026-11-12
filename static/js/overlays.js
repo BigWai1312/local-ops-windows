@@ -37,15 +37,16 @@ export function bumpIconVer(id) { iconVer.set(id, (iconVer.get(id) || 0) + 1); }
 export function getIconVer(id) { return iconVer.get(id) || 0; }
 
 /* 兼容尚未重启的旧后端；新后端会返回经过同样规则生成的 command。 */
-function shellQuotePath(path) {
-  return "'" + String(path).replace(/'/g, "'\"'\"'") + "'";
+function windowsQuotePath(path) {
+  return '"' + String(path).replace(/"/g, '""') + '"';
 }
 function fallbackScriptCommand(path) {
-  const quoted = shellQuotePath(path);
+  const quoted = windowsQuotePath(path);
   const suffix = (String(path).match(/(\.[^./]+)$/) || [])[1]?.toLowerCase();
-  if (suffix === '.py') return 'python3 -- ' + quoted;
-  if (suffix === '.zsh') return '/bin/zsh -- ' + quoted;
-  return '/bin/bash -- ' + quoted;
+  if (suffix === '.py') return 'python -- ' + quoted;
+  if (suffix === '.ps1') return 'powershell -NoProfile -ExecutionPolicy Bypass -File ' + quoted;
+  if (['.sh', '.bash', '.zsh'].includes(suffix)) return 'bash -- ' + quoted;
+  return quoted;
 }
 
 /* ============================================================
@@ -583,7 +584,7 @@ export function initAppModal({ onAddService, onAddTask }) {
     }
   });
 
-  /* 浏览工作目录（macOS 原生选择框） */
+  /* 浏览工作目录（Windows 原生选择框） */
   btnPickCwd.addEventListener('click', async () => {
     btnPickCwd.disabled = true;
     try {
@@ -669,7 +670,7 @@ export function openLogs(app) {
   openLogDrawer(app.id, (app.name || '') + ' · 日志');
 }
 export function openConsoleLog() {
-  openLogDrawer('console', '总控台 · 日志');
+  openLogDrawer('console', '本地运维台 Windows · 日志');
 }
 function openLogDrawer(appId, title) {
   closeLogs();

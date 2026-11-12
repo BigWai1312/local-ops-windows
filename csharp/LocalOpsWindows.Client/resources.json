@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "revision": 1,
+  "minClientVersion": "2.1.1",
+  "maxClientVersion": "2.1.1",
+  "light": {},
+  "dark": {}
+}

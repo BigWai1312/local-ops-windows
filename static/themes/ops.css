@@ -1,5 +1,5 @@
 /* ============================================================
-   总控台主题 — OPS / 指挥台（唯一内置主题）
+   本地运维台 Windows主题 — OPS / 指挥台（唯一内置主题）
    深空蓝黑 · 左侧导航轨 · KPI 图标卡 · 迷你负载条 · 实时动态侧栏
    柔和圆角 + 细发丝边 + 蓝调强调色，深浅双模式
    由 #themeCss 整包加载
@@ -273,7 +273,7 @@ a.icon-btn { text-decoration: none; }
   padding-top: 6px;
 }
 
-/* ⌘K 触发器 */
+/* Ctrl+K 触发器 */
 .cmdk-trigger {
   display: flex; align-items: center; gap: 9px;
   width: 300px; height: 38px; padding: 0 10px 0 14px;

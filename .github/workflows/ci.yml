@@ -1,4 +1,4 @@
-name: CI
+name: Windows CI
 
 on:
   push:
@@ -8,11 +8,18 @@ on:
 permissions:
   contents: read
 
+env:
+  PYTHONUTF8: "1"
+
 jobs:
-  check-and-release:
-    name: Check and release audit
-    runs-on: macos-15
-    timeout-minutes: 20
+  windows-check:
+    name: Windows / Python ${{ matrix.python-version }}
+    runs-on: windows-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
     env:
       PYTHONDONTWRITEBYTECODE: "1"
       SOURCE_DATE_EPOCH: "1704067200"
@@ -23,24 +30,139 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Python 3.12
+      - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
 
       - name: Show toolchain
         run: |
           python --version
           node --version
 
-      - name: Run project checks
-        run: make check PYTHON=python
+      - name: Set up .NET
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: '10.0.x'
 
-      - name: Build and verify release
+      - name: Run C# client checks
+        run: dotnet run --project csharp/LocalOpsWindows.Client.Tests/LocalOpsWindows.Client.Tests.csproj -c Release
+
+      - name: Run privacy scan
+        run: python tools/check_privacy.py
+
+      - name: Run project checks
+        run: python tools/check_project.py
+
+      - name: Start server smoke test
+        if: matrix.python-version == '3.12'
+        shell: pwsh
         run: |
-          make release PYTHON=python
-          make release-verify PYTHON=python
-          cp dist/console-*.zip "$RUNNER_TEMP/console-first.zip"
-          make release PYTHON=python
-          cmp "$RUNNER_TEMP/console-first.zip" dist/console-*.zip
-          make release-verify PYTHON=python
+          $env:CONSOLE_DATA_DIR = "$env:RUNNER_TEMP\local-ops-windows-data"
+          $env:CONSOLE_LOG_DIR = "$env:RUNNER_TEMP\local-ops-windows-logs"
+          $proc = Start-Process python -ArgumentList 'server.py','--no-browser','--preferred-port','9603' -PassThru -WindowStyle Hidden
+          try {
+            $deadline = (Get-Date).AddSeconds(30)
+            do {
+              Start-Sleep -Milliseconds 500
+              try { $health = Invoke-RestMethod 'http://127.0.0.1:9603/api/health' -TimeoutSec 2 } catch { $health = $null }
+            } while (-not $health -and (Get-Date) -lt $deadline)
+            if (-not $health) { throw 'health check timed out' }
+            if ($health.platform -ne 'windows') { throw "unexpected platform: $($health.platform)" }
+          } finally {
+            if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+          }
+
+      - name: Build reproducible release
+        if: matrix.python-version == '3.12'
+        shell: pwsh
+        run: |
+          python tools/build_release.py --dist dist
+          if ($LASTEXITCODE -ne 0) { throw 'First source build failed' }
+          $first = (Get-FileHash dist\local-ops-windows-*.zip -Algorithm SHA256).Hash
+          python tools/build_release.py --dist dist
+          if ($LASTEXITCODE -ne 0) { throw 'Second source build failed' }
+          $second = (Get-FileHash dist\local-ops-windows-*.zip -Algorithm SHA256).Hash
+          if ($first -ne $second) { throw 'release archive is not reproducible' }
+          python tools/build_release.py --dist dist --verify-only
+
+  publish-release:
+    name: Build and publish Windows installer
+    needs: windows-check
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      SOURCE_DATE_EPOCH: "1704067200"
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Install build toolchain
+        run: |
+          python -m pip install --disable-pip-version-check -r requirements-build.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Python build toolchain install failed' }
+          choco install innosetup --yes --no-progress --limit-output
+          if ($LASTEXITCODE -ne 0) { throw 'Inno Setup install failed' }
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Run release gates
+        run: |
+          python tools/check_privacy.py
+          if ($LASTEXITCODE -ne 0) { throw 'Release privacy scan failed' }
+          python tools/check_project.py
+          if ($LASTEXITCODE -ne 0) { throw 'Release project checks failed' }
+          python -m unittest discover -s tests -p "test_*.py" -v
+
+      - name: Build source archive and installer
+        shell: pwsh
+        run: |
+          python tools/build_release.py --dist dist
+          if ($LASTEXITCODE -ne 0) { throw 'Release source build failed' }
+          $testId = [guid]::NewGuid().ToString('N')
+          python tools/build_installer.py --output tmp/release-smoke --test-identity $testId
+          if ($LASTEXITCODE -ne 0) { throw 'Isolated installer build failed' }
+          python tools/verify_native_installer.py --payload build/csharp-installer/payload --setup tmp/release-smoke/LocalOpsWindows-Setup.exe --test-identity $testId
+          if ($LASTEXITCODE -ne 0) { throw 'Isolated installer verification failed' }
+          python tools/build_installer.py --output dist
+          if ($LASTEXITCODE -ne 0) { throw 'Production installer build failed' }
+          python -c "from pathlib import Path; from tools.verify_installer import verify_archive_privacy; verify_archive_privacy(Path('build/csharp-installer/payload'), Path('build/csharp-installer/dist/LocalOpsWindows.Maintenance.exe'), embedded_payload=False)"
+          if ($LASTEXITCODE -ne 0) { throw 'Production payload privacy scan failed' }
+
+      - name: Publish verified GitHub Release
+        shell: pwsh
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          $tag = $env:GITHUB_REF_NAME
+          $revision = (Get-Content csharp/LocalOpsWindows.Client/resources.json -Raw | ConvertFrom-Json).revision
+          if ($tag -ne "v$version" -and $tag -ne "v$version-resources.$revision") { throw 'Tag does not match release metadata' }
+          $assets = @(
+            "dist\local-ops-windows-$version.zip",
+            "dist\local-ops-windows-$version.zip.sha256",
+            "dist\LocalOpsWindows-Setup.exe",
+            "dist\LocalOpsWindows-Setup.exe.sha256",
+            "dist\LocalOpsWindows.Update.json",
+            "dist\LocalOpsWindows.Resources.json"
+          )
+          gh release view $tag --repo $env:GITHUB_REPOSITORY 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            throw 'Release already exists; publish a new version instead of replacing verified assets'
+          } else {
+            gh release create $tag --repo $env:GITHUB_REPOSITORY --verify-tag --latest --title "Local Ops Windows $tag" --generate-notes $assets
+          }
