@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import types
 import urllib.request
 import uuid
 from unittest import mock
@@ -74,7 +75,7 @@ def wait_for(check, timeout=30):
     raise RuntimeError("Installer smoke check timed out")
 
 
-def verify_backend(payload: Path, root: Path) -> None:
+def verify_backend(payload: Path, root: Path, migrated_app: dict | None = None) -> None:
     port = None
     for candidate in range(9600, 9610):
         with socket.socket() as probe:
@@ -115,8 +116,13 @@ def verify_backend(payload: Path, root: Path) -> None:
 
     try:
         assert wait_for(health)["platform"] == "windows"
-        assert request("/api/state")["consolePid"] == process.pid
-        fixture_ids = set()
+        state = request("/api/state")
+        assert state["consolePid"] == process.pid
+        if migrated_app is not None:
+            migrated = next(item for item in state["apps"] if item["id"] == migrated_app["id"])
+            for key in ("name", "kind", "command", "cwd", "port"):
+                assert migrated[key] == migrated_app[key], f"Upgrade changed project {key}"
+        fixture_ids = {item["id"] for item in state["apps"]}
         # Only OS commands are on PATH; the frozen anchor must run without Python.
         for code, status in ((0, "succeeded"), (130, "canceled"), (7, "failed")):
             app = request("/api/apps", {"name": "Release fixture", "kind": "task",
@@ -160,7 +166,96 @@ def verify_backend(payload: Path, root: Path) -> None:
         installer._stop_installed_app()
 
 
-def verify(payload: Path, setup: Path) -> None:
+def prepare_legacy_install(setup: Path, root: Path, shortcuts: tuple[Path, Path],
+                           registry: str) -> tuple[subprocess.Popen, dict]:
+    from PyInstaller.archive.readers import CArchiveReader
+
+    archive = CArchiveReader(str(setup))
+    if "python312.dll" not in archive.toc or sys.version_info[:2] != (3, 12):
+        raise RuntimeError("Legacy installer verification requires matching Python 3.12")
+    payload = root / "legacy-payload"
+    for name in archive.toc:
+        if name.startswith("payload\\"):
+            relative = Path(name.removeprefix("payload\\"))
+            destination = payload / relative
+            if not destination.resolve().is_relative_to(payload.resolve()):
+                raise RuntimeError("Legacy payload path escapes test directory")
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(archive.extract(name))
+    legacy = types.ModuleType("legacy_installer")
+    legacy.__file__ = str(setup)
+    exec(marshal.loads(archive.extract("installer")), legacy.__dict__)
+    with ExitStack() as stack:
+        for name, value in (("INSTALL_DIR", installer.INSTALL_DIR),
+                            ("RUN_KEY", registry + r"\Run"),
+                            ("UNINSTALL_KEY", registry + r"\Uninstall")):
+            stack.enter_context(mock.patch.object(legacy, name, value))
+        stack.enter_context(mock.patch.object(legacy, "_payload_dir", return_value=payload))
+        stack.enter_context(mock.patch.object(legacy, "_shortcut_paths", return_value=shortcuts))
+        stack.enter_context(mock.patch.object(legacy, "_remove_legacy_scheduled_task"))
+        stack.enter_context(mock.patch.object(legacy, "_launch_main"))
+        stack.enter_context(mock.patch.object(sys, "executable", str(setup)))
+        legacy.install(silent=True)
+        legacy._set_autostart(False)
+    old_executable = installer.INSTALL_DIR / "LocalOpsWindows.exe"
+    assert old_executable.read_bytes() == (payload / old_executable.name).read_bytes()
+    assert (installer.INSTALL_DIR / installer.SETUP_EXE).read_bytes() == setup.read_bytes()
+    assert installer._current_executable() == old_executable
+    assert all(path.stat().st_size > 100 for path in shortcuts)
+    port = None
+    for candidate in range(9600, 9610):
+        with socket.socket() as probe:
+            try:
+                probe.bind(("127.0.0.1", candidate))
+                port = candidate
+                break
+            except OSError:
+                pass
+    if port is None:
+        raise RuntimeError("No free legacy test port")
+    process = subprocess.Popen(
+        [str(old_executable), "--no-browser", "--background", "--preferred-port", str(port)],
+        cwd=old_executable.parent,
+        env=dict(os.environ, CONSOLE_DATA_DIR=str(root / "data"),
+                 CONSOLE_LOG_DIR=str(root / "logs")),
+        creationflags=subprocess.CREATE_NO_WINDOW)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+    def ready():
+        if process.poll() is not None:
+            raise RuntimeError(f"Legacy backend exited: {process.returncode}")
+        try:
+            with opener.open(f"http://127.0.0.1:{port}/api/state", timeout=5) as response:
+                state = json.load(response)
+        except (OSError, urllib.error.URLError):
+            return None
+        pid = int(state["consolePid"])
+        identity = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+             f"Get-CimInstance Win32_Process -Filter 'ProcessId={pid}' | "
+             "Select-Object ExecutablePath,ParentProcessId | ConvertTo-Json -Compress"],
+            capture_output=True, text=True, check=True, timeout=15,
+            creationflags=subprocess.CREATE_NO_WINDOW)
+        owner = json.loads(identity.stdout)
+        assert Path(owner["ExecutablePath"]).resolve() == old_executable.resolve()
+        # Onefile packages serve from a child of the bootloader process.
+        assert pid == process.pid or owner["ParentProcessId"] == process.pid
+        return state
+
+    wait_for(ready)
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}/api/apps",
+        data=json.dumps({"name": "Legacy upgrade fixture", "kind": "task",
+                         "command": "cmd.exe /d /c exit 0", "cwd": str(root),
+                         "port": None}).encode(),
+        headers={"Content-Type": "application/json"})
+    with opener.open(request, timeout=10) as response:
+        app = json.load(response)
+    print("PASS: real legacy installer code, binary startup and saved project", flush=True)
+    return process, app
+
+
+def verify(payload: Path, setup: Path, legacy_setup: Path | None = None) -> None:
     verify_archive_privacy(payload, setup)
     check = subprocess.run([str(setup), "--verify-only", "--silent"],
                            timeout=90, creationflags=subprocess.CREATE_NO_WINDOW)
@@ -181,14 +276,53 @@ def verify(payload: Path, setup: Path) -> None:
             stack.enter_context(mock.patch.object(installer.sys, "frozen", True, create=True))
             stack.enter_context(mock.patch.object(installer.sys, "executable", str(setup)))
             try:
+                migrated_app = None
+                legacy_process = None
+                if legacy_setup is not None:
+                    legacy_process, migrated_app = prepare_legacy_install(
+                        legacy_setup, root, shortcuts, registry)
+                    old_config = (root / "data/config.json").read_bytes()
+                    old_shortcuts = {path: path.read_bytes() for path in shortcuts}
+                    old_registry = installer._registry_snapshot(installer.UNINSTALL_KEY)
+                    with mock.patch.object(installer, "_create_shortcut",
+                                           side_effect=OSError("Upgrade rollback fixture")):
+                        try:
+                            installer.install(launch=False)
+                        except OSError as error:
+                            assert str(error) == "Upgrade rollback fixture"
+                        else:
+                            raise AssertionError("Upgrade failure was not reported")
+                    assert not (target / installer.CURRENT_NAME).exists()
+                    assert (target / installer.SETUP_EXE).read_bytes() == legacy_setup.read_bytes()
+                    assert old_registry == installer._registry_snapshot(installer.UNINSTALL_KEY)
+                    assert all(path.read_bytes() == content for path, content in old_shortcuts.items())
+                    assert installer.PRODUCT_ID not in installer._registry_snapshot(installer.RUN_KEY)
+                    assert (root / "data/config.json").read_bytes() == old_config
+                    assert legacy_process.wait(timeout=15) is not None
+                    print("PASS: failed legacy upgrade restores setup, shortcuts, registry and config", flush=True)
                 installer.install(launch=False)
                 print("PASS: isolated install and shortcuts", flush=True)
                 installed = installer._current_executable().parent
                 assert installer.validate_payload(installed)["version"]
                 assert all(path.stat().st_size > 100 for path in shortcuts)
                 assert (target / installer.SETUP_EXE).read_bytes() == setup.read_bytes()
-                assert "--background" in installer._registry_snapshot(installer.RUN_KEY)[installer.PRODUCT_ID][0]
-                verify_backend(installed, root)
+                if legacy_setup is None:
+                    assert "--background" in installer._registry_snapshot(installer.RUN_KEY)[installer.PRODUCT_ID][0]
+                else:
+                    assert installer.PRODUCT_ID not in installer._registry_snapshot(installer.RUN_KEY)
+                    assert (root / "data/config.json").read_bytes() == old_config
+                    for shortcut in shortcuts:
+                        command = (
+                            "$shell=New-Object -ComObject WScript.Shell;"
+                            f"$shell.CreateShortcut({installer._ps_quote(shortcut)}).TargetPath"
+                        )
+                        result = subprocess.run(
+                            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
+                            capture_output=True, text=True, check=True, timeout=15,
+                            creationflags=subprocess.CREATE_NO_WINDOW)
+                        assert Path(result.stdout.strip()).resolve() == installer._current_executable().resolve()
+                    print("PASS: legacy upgrade preserves config and disabled autostart, redirects shortcuts", flush=True)
+                verify_backend(installed, root, migrated_app)
                 print("PASS: frozen backend, task exit codes, restart and stop", flush=True)
                 config = (root / "data/config.json").read_bytes()
                 installer._set_autostart(False)
@@ -211,6 +345,7 @@ def verify(payload: Path, setup: Path) -> None:
                 assert all(not path.exists() for path in shortcuts)
                 assert (root / "data/config.json").read_bytes() == config
             finally:
+                installer._stop_installed_app()
                 for key in (registry + r"\Run", registry + r"\Uninstall", registry):
                     try:
                         winreg.DeleteKey(winreg.HKEY_CURRENT_USER, key)
@@ -223,5 +358,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--payload", type=Path, required=True)
     parser.add_argument("--setup", type=Path, required=True)
+    parser.add_argument("--legacy-setup", type=Path,
+                        help="Trusted local Python 3.12 installer to verify a real legacy upgrade")
     args = parser.parse_args()
-    verify(args.payload.resolve(), args.setup.resolve())
+    verify(args.payload.resolve(), args.setup.resolve(),
+           args.legacy_setup.resolve() if args.legacy_setup else None)

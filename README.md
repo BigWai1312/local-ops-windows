@@ -142,6 +142,8 @@ python tools/build_installer.py --output dist
 python tools/verify_installer.py --payload build/csharp-installer/payload --setup dist/LocalOpsWindows-Setup.exe
 ```
 
+如需验证旧 WebView 单文件安装包升级，在 Python 3.12 下给最后一条命令追加 `--legacy-setup path/to/trusted-old-setup.exe`。此选项执行可信旧包内的安装代码和程序，在独立临时目录、专用 HKCU 测试键及临时快捷方式中检查升级与失败回滚，不替换当前用户的正式安装。它不覆盖旧版客户端窗口交互或登录自启的实际桌面验收。
+
 GitHub Actions 在每次推送或 PR 时运行检查；匹配 `VERSION` 的 `v<version>` 标签通过检查后才创建 Release，已存在的发行资产不会覆盖。应用内更新只信任仓库 `BigWai1312/local-ops-windows` 的 HTTPS Release 资产，并校验更新清单中的 SHA-256。
 
 客户端或后台代码更新通过安装包完成。兼容资源更新仅支持已列入白名单的主题颜色 JSON，校验版本范围和递增修订号后即时应用，并保留可回退缓存；不下载执行脚本、DLL 或 XAML。资源发行标签为 `v<version>-resources.<revision>`，仍须附带安装包，供旧客户端升级使用。
