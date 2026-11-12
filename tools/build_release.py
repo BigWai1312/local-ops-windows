@@ -26,6 +26,15 @@ DEFAULT_DIST = ROOT / "dist"
 REQUIRED_LICENSES = (
     "licenses/Geist-OFL-1.1.txt",
     "licenses/Lucide-LICENSE.txt",
+    "licenses/pystray-COPYING.txt",
+    "licenses/pystray-LGPL-3.0.txt",
+    "licenses/pythonnet-LICENSE.txt",
+    "licenses/pywebview-LICENSE.txt",
+    "licenses/bottle-LICENSE.txt",
+    "licenses/clr-loader-LICENSE.txt",
+    "licenses/Pillow-LICENSE.txt",
+    "licenses/proxy-tools-LICENSE.txt",
+    "licenses/six-LICENSE.txt",
 )
 REQUIRED_PROJECT_DOCS = (
     "README.md",
@@ -46,6 +55,7 @@ INCLUDE = (
     "licenses",
     *REQUIRED_LICENSES,
     "server.py",
+    "desktop.py",
     "updater.py",
     "installer.py",
     "start.bat",
@@ -56,6 +66,8 @@ INCLUDE = (
     "requirements-dev.txt",
     "requirements-build.txt",
     "Makefile",
+    "csharp",
+    ".github",
 )
 EXCLUDED_PARTS = {
     ".git",
@@ -67,6 +79,8 @@ EXCLUDED_PARTS = {
     ".vscode",
     "__pycache__",
     "build",
+    "bin",
+    "obj",
     "data",
     "dist",
     "htmlcov",

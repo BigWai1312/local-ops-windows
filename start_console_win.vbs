@@ -4,5 +4,5 @@ Dim shell, fso, root, command
 Set shell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 root = fso.GetParentFolderName(WScript.ScriptFullName)
-command = "cmd.exe /d /c """ & root & "\start.bat"""
+command = "cmd.exe /d /c """ & root & "\start.bat"" --background"
 shell.Run command, 0, False

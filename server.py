@@ -2189,6 +2189,7 @@ def build_health(cfg):
         "status": "degraded" if degraded else "ok",
         "platform": "windows",
         "productName": PRODUCT_NAME,
+        "consolePid": SELF_PID,
         "version": APP_VERSION,
         "schemaVersion": snapshot.get(
             "schemaVersion", CURRENT_SCHEMA_VERSION),
@@ -2385,7 +2386,14 @@ def _start_app_windows(app, cwd, logf, env, marker, token):
     受控身份 = 锚点 PID + marker 命令行 + PPID 后代树。
     """
     if FROZEN:
-        anchor = os.path.join(INSTALL_DIR, "LocalOpsWindowsAnchor.exe")
+        # 2.0 uses an onedir native client.  Keep the helper next to the
+        # executable, while still accepting the 1.x root location during an
+        # in-place upgrade.
+        anchors = (
+            os.path.join(INSTALL_DIR, "LocalOpsWindowsAnchor.exe"),
+            os.path.join(os.path.dirname(INSTALL_DIR), "LocalOpsWindowsAnchor.exe"),
+        )
+        anchor = next((path for path in anchors if os.path.isfile(path)), anchors[0])
         command = [anchor, marker, app["command"]]
         missing_message = "缺少 LocalOpsWindowsAnchor.exe，无法在 Windows 启动应用"
     else:
@@ -3700,7 +3708,16 @@ def serialized_app_operation(fn):
 
 class ConsoleServer(ThreadingHTTPServer):
     daemon_threads = True
-    allow_reuse_address = True
+    # Windows SO_REUSEADDR permits two processes to listen on the same
+    # address, which can route requests to the wrong Local Ops instance.
+    allow_reuse_address = False
+
+    def server_bind(self):
+        if IS_WIN and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(
+                socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1
+            )
+        super().server_bind()
 
     def __init__(self, addr, handler_cls, cfg, port):
         super().__init__(addr, handler_cls)
@@ -3717,7 +3734,8 @@ class ConsoleServer(ThreadingHTTPServer):
         """空闲连接超时 / 客户端中途断开属正常现象，不刷 traceback。"""
         exc_type, exc, _ = sys.exc_info()
         if exc_type and isinstance(exc, (TimeoutError, BrokenPipeError,
-                                         ConnectionResetError)):
+                                         ConnectionResetError,
+                                         ConnectionAbortedError)):
             return
         super().handle_error(request, client_address)
 
@@ -3767,7 +3785,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
         try:
-            if self.path.startswith("/api/state"):
+            if self.path.startswith(("/api/state", "/api/tasks/status")):
                 return  # 2s 轮询不刷日志
         except Exception:
             pass
@@ -3936,7 +3954,7 @@ class Handler(BaseHTTPRequestHandler):
         if body:
             try:
                 self.wfile.write(body)
-            except (BrokenPipeError, ConnectionResetError):
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                 pass
 
     def send_json(self, obj, status=200):
@@ -4008,6 +4026,15 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(get_state_snapshot(self.server.cfg,
                                                   self.server.console_port))
                 return
+            if path == "/api/tasks/status":
+                cfg = self.server.cfg.snapshot()
+                self.send_json({"apps": [
+                    {"id": app["id"], "name": app["name"], "kind": "task",
+                     "lastExit": public_last_exit(app)}
+                    for app in cfg.get("apps", [])
+                    if app.get("kind") == "task"
+                ]})
+                return
             if path == "/api/console/log":
                 self.handle_console_log(parsed.query)
                 return
@@ -4022,7 +4049,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.serve_icon(path)
                 return
             self.serve_static(path)
-        except (BrokenPipeError, ConnectionResetError):
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
         except Exception as e:
             self._handle_request_error("GET", e)
@@ -4169,7 +4196,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.handle_fetch_favicon(app_id)
                     return
             self.send_err(404, "接口不存在")
-        except (BrokenPipeError, ConnectionResetError):
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
         except Exception as e:
             self._handle_request_error("POST", e)
@@ -4183,7 +4210,17 @@ class Handler(BaseHTTPRequestHandler):
         if what not in ("dir", "script"):
             self.send_err(400, "what 必须是 dir/script")
             return
-        path, canceled = pick_path(what)
+        if "path" in data:
+            # Native clients own their file dialog; reuse the same script quoting rules.
+            path = data["path"]
+            if (what != "script" or not isinstance(path, str)
+                    or not os.path.isabs(path) or not os.path.isfile(path)
+                    or os.path.splitext(path)[1].lower() not in SCRIPT_SUFFIXES | {".exe", ".com"}):
+                self.send_err(400, "请选择存在的本地脚本文件")
+                return
+            canceled = False
+        else:
+            path, canceled = pick_path(what)
         if canceled:  # 用户取消不是错误，前端静默
             self.send_json({"ok": True, "canceled": True})
         elif not path:
@@ -4745,7 +4782,7 @@ class Handler(BaseHTTPRequestHandler):
                 updated = dict(updated)
                 updated["stoppedForUpdate"] = True
             self.send_json(updated)
-        except (BrokenPipeError, ConnectionResetError):
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
         except Exception as e:
             self._handle_request_error("PUT", e)
@@ -4772,7 +4809,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.handle_icon_delete(app_id)
                 return
             self.send_err(404, "接口不存在")
-        except (BrokenPipeError, ConnectionResetError):
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
         except Exception as e:
             self._handle_request_error("DELETE", e)
@@ -5016,12 +5053,18 @@ def restart_helper(old_pid, preferred_port):
         return 1
     args = ([sys.executable, "--preferred-port"] if FROZEN else
             [sys.executable, os.path.abspath(__file__), "--preferred-port"])
-    args += [str(int(preferred_port)), "--no-browser"]
+    args += [str(int(preferred_port))]
+    if not FROZEN:
+        args.append("--no-browser")
+    elif os.path.basename(sys.executable).lower() == "localopswindowsbackend.exe":
+        # The dedicated windowless backend must reopen its log after exec.
+        args.extend(["--no-browser", "--background"])
     os.execv(sys.executable, args)
     return 0
 
 
-def _run_console(preferred_port=None, open_browser=True):
+def create_console_server(preferred_port=None):
+    """Prepare and bind the HTTP console without entering serve_forever()."""
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -5046,8 +5089,42 @@ def _run_console(preferred_port=None, open_browser=True):
         print("错误：端口 %d-%d 均被占用，无法启动。" %
               (PORT_START, PORT_START + PORT_TRIES - 1))
         sys.exit(1)
+    return server, port
 
-    print("本地运维台 Windows 已启动: http://%s:%d/  (Ctrl+C 停止)" % (HOST, port), flush=True)
+
+def start_console_server(preferred_port=None, log_to_file=False):
+    """Acquire the project lock and return ``(server, port, lock_file)``."""
+    migration = prepare_runtime_storage()
+    if log_to_file:
+        redirect_console_output()
+    if migration["dataMigrated"]:
+        print("已将项目内旧配置和图标复制到: %s" % DATA_DIR, flush=True)
+    if migration["logsMigrated"]:
+        print("已将项目内旧日志复制到: %s" % LOGS_DIR, flush=True)
+    instance_lock = acquire_instance_lock()
+    if instance_lock is None:
+        return None
+    try:
+        console, port = create_console_server(preferred_port)
+    except Exception:
+        release_instance_lock(instance_lock)
+        raise
+    print("本地运维台 Windows 已启动: http://%s:%d/" % (HOST, port), flush=True)
+    return console, port, instance_lock
+
+
+def _run_console(preferred_port=None, open_browser=True):
+    session = start_console_server(preferred_port)
+    if session is None:
+        print("本地运维台 Windows 已在运行（同一数据目录只允许一个实例）。", flush=True)
+        if open_browser:
+            instances = find_console_instances()
+            ports = [port for item in instances for port in item.get("ports", [])]
+            if ports:
+                webbrowser.open("http://%s:%d/" % (HOST, min(ports)))
+        return False
+    server, port, instance_lock = session
+
     if open_browser:
         open_browser_later(port)
     try:
@@ -5056,11 +5133,13 @@ def _run_console(preferred_port=None, open_browser=True):
         pass
     finally:
         server.server_close()
+        release_instance_lock(instance_lock)
         print("已停止", flush=True)
+    return True
 
 
 def redirect_console_output():
-    """在运行目录迁移完成后，将 .app 输出安全追加到 Library Logs。"""
+    """将后台进程输出写入日志，包括没有控制台句柄的 windowed EXE。"""
     path = os.path.join(LOGS_DIR, "console.log")
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     try:
@@ -5071,42 +5150,22 @@ def redirect_console_output():
                 stream.flush()
             except (AttributeError, OSError):
                 pass
-        if IS_WIN:
-            # 重定向后 fd 仍是 CRT 文本模式，会与 TextIOWrapper 的
-            # 换行翻译叠加成 \r\r\n；切二进制模式只留一层翻译。
-            import msvcrt
-            for target in (fd, 1, 2):
-                try:
-                    msvcrt.setmode(target, os.O_BINARY)
-                except OSError:
-                    pass
-        for target in (1, 2):
-            try:
-                os.dup2(fd, target)
-            except OSError:
-                pass
-    finally:
+        stream = os.fdopen(
+            fd, "a", buffering=1, encoding="utf-8",
+            errors="backslashreplace", newline=None,
+        )
+    except Exception:
         os.close(fd)
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.reconfigure(line_buffering=True)
-        except (AttributeError, OSError):
-            pass
+        raise
+    sys.stdout = stream
+    sys.stderr = stream
+    return stream
 
 
 def main(preferred_port=None, open_browser=True, log_to_file=False):
     """Run exactly one console for this project/data directory."""
-    migration = prepare_runtime_storage()
-    if log_to_file:
-        redirect_console_output()
-    if migration["dataMigrated"]:
-        print("已将项目内旧配置和图标复制到: %s" % DATA_DIR,
-              flush=True)
-    if migration["logsMigrated"]:
-        print("已将项目内旧日志复制到: %s" % LOGS_DIR,
-              flush=True)
-    instance_lock = acquire_instance_lock()
-    if instance_lock is None:
+    session = start_console_server(preferred_port, log_to_file=log_to_file)
+    if session is None:
         print("本地运维台 Windows 已在运行（同一数据目录只允许一个实例）。", flush=True)
         if open_browser:
             instances = find_console_instances()
@@ -5114,8 +5173,17 @@ def main(preferred_port=None, open_browser=True, log_to_file=False):
             if ports:
                 webbrowser.open("http://%s:%d/" % (HOST, min(ports)))
         return False
+    server, port, instance_lock = session
     try:
-        _run_console(preferred_port, open_browser)
+        if open_browser:
+            open_browser_later(port)
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            server.server_close()
+            print("已停止", flush=True)
         return True
     finally:
         release_instance_lock(instance_lock)

@@ -20,6 +20,10 @@ import { buildGlyphGrid, initAppModal, initLogDrawer, openConfirm,
 import { configuredPort, actualPorts, portIsOpenable,
   preferredOpenPort } from './js/ports.js';
 
+if (new URLSearchParams(window.location.search).get('desktop') === '1') {
+  document.documentElement.dataset.shell = 'desktop';
+}
+
 /* ---------------- DOM 引用 ---------------- */
 const banner = $('#banner');
 const sideNav = $('#sideNav');

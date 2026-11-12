@@ -1,13 +1,13 @@
 # 本地运维台 Windows 执行与发布计划
 
-> 当前状态：已完成 Windows-only 二开、隐私审计、发行包校验，并发布到公开 Fork `BigWai1312/local-ops-windows` 的草稿 PR #1。
+> 当前状态：2.1.0 已接入 C# / WPF、版本目录安装器和 GitHub 更新器。发行以当前测试、安装包验证和远端 CI 为准；剩余验收见 `csharp/FEATURE_PARITY.md`。下文的历史实现记录保留用于追溯。
 
 ## 1. 目标与边界
 
 - 本地目录：`local-ops-windows/`
 - 产品名：本地运维台 Windows（Local Ops Windows）
 - 目标平台：Windows 10/11 x64
-- 运行时：Python 3.12+ 标准库，前端无构建、无 CDN
+- 运行时：安装版为自包含 .NET 10 WPF 客户端 + PyInstaller 标准库后台和锚点；网页兼容入口无构建、无 CDN
 - 网络边界：仅绑定 `127.0.0.1`
 - 上游来源：`laogou717/local-ops`，MIT License
 
@@ -37,8 +37,11 @@
 - 使用 `msvcrt.locking` 实现 Windows 单实例写锁。
 - 使用 `tools/win_anchor.py`、随机 run token 和 PPID 树识别本程序启动的进程。
 - 停止时只对已验证成员调用 `OpenProcess(PROCESS_TERMINATE)`/`TerminateProcess`；不按端口、进程名或裸 PID 杀进程。
-- 禁止外部进程认领和任意外部进程结束；前端按 `capabilities` 隐藏相关入口。
+- HTTP 后台禁止外部进程认领和任意外部进程结束；网页按 `capabilities` 隐藏相关入口。C# 预览增加独立的手动端口冲突处理：确认目标、复核创建身份、按需一次性 UAC；不认领、不自动重放或结束外部进程树。
 - 新增 `start_console_win.vbs` 隐藏窗口启动器、Windows 测试、隐私扫描和可重复发行包检查。
+- 新增 `desktop.py`：WebView2 窗口、单实例唤醒、托盘生命周期、窗口状态记忆和缺失运行时提示。
+- 安装包快捷方式直接指向桌面客户端 EXE；关闭窗口默认隐藏到托盘，只有托盘退出才停止本地服务。
+- 2.0.2 安装器能够停止并移除本产品 2.0.x `app\\` 下的 Tk 客户端，再安装根目录单文件 WebView2 客户端；不会触碰其他项目或 Docker 目录。
 - 新增 `NOTICE.md`，明确上游来源、许可证、PR 参考和二开范围。
 
 ## 4. Windows-only 收敛
@@ -70,7 +73,7 @@ iconutil 生成逻辑
 
 ## 5. 验证计划
 
-1. 运行 `python -m unittest tests.test_windows -v`，验证真实服务启动、端口监听、受控身份和停止。
+1. 运行 `python -m unittest tests.test_windows tests.test_desktop -v`，验证真实服务、桌面入口、单实例和 WebView2 缺失处理。
 2. 运行 `python tools/check_privacy.py`，拒绝个人路径、邮箱、密钥、令牌和敏感文件。
 3. 运行 `python tools/check_project.py`，验证 Python/JavaScript、静态资源、Windows 启动器和测试。
 4. 运行 `python tools/build_release.py --dist dist`，再用 `--verify-only` 校验归档与 SHA-256。
@@ -107,3 +110,11 @@ GitHub 插件负责仓库读取、分支提交、远端核对和草稿 PR 创建
 - 仓库保留上游许可证和 NOTICE，变更记录可追溯。
 - GitHub Fork、目标分支和草稿 PR 已创建，PR 描述包含验证结果与隐私声明。
 
+## 9. C# 客户端交付计划
+
+1. 按 `csharp/FEATURE_PARITY.md` 对照网页功能逐项验收，保留受控进程边界。
+2. 使用 WPF 单实例、托盘、窗口记忆、命令面板与任务通知；隐藏时暂停界面轮询。
+3. 自包含打包 .NET、Python 后台、锚点和对应许可，不要求安装 Python、.NET SDK 或 WebView2。
+4. GitHub 更新资产只来自个人 Fork，下载后校验摘要；资源格式禁止脚本、DLL 和 XAML。
+5. 运行 C# 测试及 `tools/verify_installer.py`，验证内嵌 payload、解压代码隐私、隔离安装、真实快捷方式和注册表、冻结后台生命周期、卸载保留数据，再核对原生窗口实际显示与操作。
+6. 使用不含私人邮箱历史的发布提交更新个人 Fork；CI 通过后创建版本标签，发布并回读下载资产校验摘要。

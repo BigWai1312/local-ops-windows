@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Per-user installer, updater and uninstaller for Local Ops Windows.
 
-The frozen setup executable carries the two application binaries in a
+The frozen setup executable carries a hashed versioned C# and backend
 ``payload`` directory. It deliberately installs under ``%LOCALAPPDATA%`` so
 normal users do not need elevation and existing Docker projects are untouched.
 """
@@ -10,26 +10,92 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import hashlib
+import json
 import os
 from pathlib import Path
 import shutil
+import re
 import subprocess
 import sys
 import time
+import tempfile
 import winreg
 
 
 PRODUCT_ID = "LocalOpsWindows"
 DISPLAY_NAME = "Local Ops Windows"
-MAIN_EXE = "LocalOpsWindows.exe"
+MAIN_EXE = "LocalOpsWindows.Client.exe"
 ANCHOR_EXE = "LocalOpsWindowsAnchor.exe"
 SETUP_EXE = "LocalOpsWindows-Setup.exe"
+NATIVE_APP_DIR = "app"
+PAYLOAD_DOCUMENTS = (
+    "LICENSE",
+    "NOTICE.md",
+    "THIRD_PARTY_NOTICES.md",
+)
 INSTALL_DIR = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "Programs" / PRODUCT_ID
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall" + "\\" + PRODUCT_ID
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-DETACHED_PROCESS = getattr(subprocess, "DETACHED_PROCESS", 0)
 LEGACY_TASK_NAME = "Local Ops Windows"
+MANIFEST_NAME = "payload.json"
+CURRENT_NAME = "current.json"
+STABLE_VERSION_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
+
+
+def _hash(path: Path) -> str:
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def validate_payload(payload: Path) -> dict:
+    manifest = json.loads((payload / MANIFEST_NAME).read_text(encoding="utf-8"))
+    if (manifest.get("product") != "LocalOpsWindows.CSharp"
+            or not STABLE_VERSION_RE.fullmatch(str(manifest.get("version", "")))):
+        raise ValueError("安装包产品或版本无效")
+    files = manifest.get("files")
+    if not isinstance(files, dict) or not 1 <= len(files) <= 5000:
+        raise ValueError("安装清单无效")
+    required = {MAIN_EXE, "backend/LocalOpsWindowsBackend.exe",
+                "backend/" + ANCHOR_EXE, "LICENSE", "NOTICE.md",
+                "THIRD_PARTY_NOTICES.md", "Assets/local-ops.ico", "resources.json",
+                "LocalOpsWindows.Client.dll", "LocalOpsWindows.Client.runtimeconfig.json",
+                "LocalOpsWindows.Client.deps.json", "coreclr.dll", "hostfxr.dll", "hostpolicy.dll"}
+    if not required.issubset(files):
+        raise ValueError("安装包缺少客户端、后台或许可证")
+    total = 0
+    for relative, digest in files.items():
+        if (not isinstance(relative, str)
+                or "\\" in relative or ":" in relative
+                or any(part in {"", ".", ".."} for part in relative.split("/"))
+                or not re.fullmatch(r"[A-Za-z0-9_. /+-]+", relative)
+                or not re.fullmatch(r"[0-9a-f]{64}", str(digest))):
+            raise ValueError("安装清单路径或摘要无效")
+        path = payload / relative
+        if not path.resolve().is_relative_to(payload.resolve()) or path.is_symlink():
+            raise ValueError("安装清单路径越界")
+        total += path.stat().st_size
+        if total > 2 * 1024 ** 3 or _hash(path) != digest:
+            raise ValueError("安装包完整性校验失败")
+    actual = {path.relative_to(payload).as_posix() for path in payload.rglob("*") if path.is_file()}
+    if actual != set(files) | {MANIFEST_NAME}:
+        raise ValueError("安装包存在未登记文件")
+    return manifest
+
+
+def _current_executable() -> Path:
+    try:
+        value = json.loads((INSTALL_DIR / CURRENT_NAME).read_text(encoding="utf-8"))
+        relative = value["directory"]
+        if not re.fullmatch(r"versions/\d+\.\d+\.\d+-[0-9a-f]{12}", relative):
+            raise ValueError("版本目录无效")
+        target = (INSTALL_DIR / relative / MAIN_EXE).resolve()
+        if not target.is_relative_to(INSTALL_DIR.resolve()):
+            raise ValueError("版本目录越界")
+        return target
+    except FileNotFoundError:
+        return INSTALL_DIR / "LocalOpsWindows.exe"
 
 
 def _payload_dir() -> Path:
@@ -47,6 +113,10 @@ def _pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
+    kernel32.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
     handle = kernel32.OpenProcess(0x1000, False, pid)
     if not handle:
         return False
@@ -92,7 +162,7 @@ def _set_autostart(enabled: bool) -> None:
     with winreg.CreateKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as key:
         if enabled:
             winreg.SetValueEx(key, PRODUCT_ID, 0, winreg.REG_SZ,
-                              f'"{INSTALL_DIR / MAIN_EXE}" --background')
+                              f'"{_current_executable()}" --background')
         else:
             try:
                 winreg.DeleteValue(key, PRODUCT_ID)
@@ -106,7 +176,7 @@ def _write_uninstall_entry() -> None:
             "DisplayName": DISPLAY_NAME,
             "Publisher": "BigWai1312",
             "InstallLocation": str(INSTALL_DIR),
-            "DisplayIcon": str(INSTALL_DIR / MAIN_EXE),
+            "DisplayIcon": str(_current_executable()),
             "UninstallString": f'"{INSTALL_DIR / SETUP_EXE}" --uninstall',
             "QuietUninstallString": f'"{INSTALL_DIR / SETUP_EXE}" --uninstall --silent',
             "NoModify": 1,
@@ -135,72 +205,155 @@ def _delete_uninstall_entry() -> None:
 def _launch_main(background: bool) -> None:
     flags = CREATE_NO_WINDOW if background else 0
     subprocess.Popen(
-        [str(INSTALL_DIR / MAIN_EXE)] + (["--background"] if background else []),
-        cwd=str(INSTALL_DIR), stdin=subprocess.DEVNULL,
+        [str(_current_executable())] + (["--background"] if background else []),
+        cwd=str(_current_executable().parent), stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL if background else None,
         stderr=subprocess.DEVNULL if background else None,
         creationflags=flags, close_fds=True)
 
 
 def _stop_installed_app() -> None:
-    """Stop only the installed executable at our exact per-user path."""
-    target = INSTALL_DIR / MAIN_EXE
-    if not target.exists():
+    """Leave anchors and projects alive; stop only exact installed client/backend paths."""
+    targets = [
+        path for path in (
+            INSTALL_DIR / "LocalOpsWindows.exe",
+            INSTALL_DIR / NATIVE_APP_DIR / "LocalOpsWindows.exe",
+            _current_executable(),
+            *list((INSTALL_DIR / "versions").glob("*/" + MAIN_EXE)),
+            *list((INSTALL_DIR / "versions").glob("*/backend/LocalOpsWindowsBackend.exe")),
+        ) if path.exists()
+    ]
+    targets = list(dict.fromkeys(path.resolve() for path in targets))
+    if any(not path.is_relative_to(INSTALL_DIR.resolve()) for path in targets):
+        raise RuntimeError("拒绝停止安装目录外的程序")
+    if not targets:
         return
+    target_literals = ",".join(_ps_quote(path) for path in targets)
     script = (
-        f"$target={_ps_quote(target)};"
-        "Get-CimInstance Win32_Process -Filter \"Name='LocalOpsWindows.exe'\" "
-        "| Where-Object { $_.ExecutablePath -eq $target } "
-        "| ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+        "$ErrorActionPreference='Stop';"
+        f"$targets=@({target_literals});"
+        "Get-CimInstance Win32_Process -Filter \"Name='LocalOpsWindows.exe' OR Name='LocalOpsWindows.Client.exe' OR Name='LocalOpsWindowsBackend.exe'\" "
+        "| Where-Object { $targets -contains $_.ExecutablePath } "
+        "| ForEach-Object {"
+        "try { $p=[Diagnostics.Process]::GetProcessById($_.ProcessId);"
+        "$null=$p.Handle;"
+        "if (($targets -contains $p.MainModule.FileName) -and "
+        "([Math]::Abs(($p.StartTime.ToUniversalTime()-$_.CreationDate.ToUniversalTime()).TotalMilliseconds) -lt 2)) {"
+        "$null=$p.CloseMainWindow();"
+        "if (-not $p.WaitForExit(5000)) { $p.Kill(); $null=$p.WaitForExit(5000) }"
+        "}; $p.Dispose() } catch [ArgumentException] {} }"
     )
-    subprocess.run(
+    completed = subprocess.run(
         ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
         capture_output=True, text=True, timeout=20, creationflags=CREATE_NO_WINDOW)
+    if completed.returncode:
+        raise RuntimeError("无法停止旧版本客户端或后台，请先退出后重试")
     deadline = time.monotonic() + 5.0
     while time.monotonic() < deadline:
-        try:
-            with target.open("rb+"):
-                return
-        except OSError:
-            time.sleep(0.1)
+        unlocked = True
+        for target in targets:
+            try:
+                with target.open("rb+"):
+                    pass
+            except OSError:
+                unlocked = False
+                break
+        if unlocked:
+            return
+        time.sleep(0.1)
+    raise RuntimeError("旧版本文件仍在使用，安装已取消")
 
 
-def _schedule_remove(path: Path) -> None:
+def _schedule_remove(path: Path) -> subprocess.Popen:
+    if path.resolve() != INSTALL_DIR.resolve() or path.name != PRODUCT_ID:
+        raise RuntimeError("拒绝删除产品安装目录之外的路径")
     script = f"Start-Sleep -Milliseconds 700; Remove-Item -LiteralPath {_ps_quote(path)} -Recurse -Force -ErrorAction SilentlyContinue"
-    subprocess.Popen(
+    return subprocess.Popen(
         ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        creationflags=DETACHED_PROCESS | CREATE_NO_WINDOW, close_fds=True)
+        creationflags=CREATE_NO_WINDOW, close_fds=True)
 
 
-def install(update_pid: int | None = None, silent: bool = False) -> None:
+def _registry_snapshot(path: str) -> dict:
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, path) as key:
+            values = {}
+            for index in range(winreg.QueryInfoKey(key)[1]):
+                name, value, kind = winreg.EnumValue(key, index)
+                values[name] = (value, kind)
+            return values
+    except FileNotFoundError:
+        return {}
+
+
+def install(update_pid: int | None = None, silent: bool = False,
+            launch: bool = True) -> None:
+    payload = _payload_dir()
+    manifest = validate_payload(payload)
+    INSTALL_DIR.mkdir(parents=True, exist_ok=True)
+    version_dir = INSTALL_DIR / "versions" / (manifest["version"] + "-" + _hash(payload / MANIFEST_NAME)[:12])
+    version_dir.parent.mkdir(parents=True, exist_ok=True)
+    if not version_dir.exists():
+        with tempfile.TemporaryDirectory(prefix=".install-", dir=INSTALL_DIR) as stage_name:
+            stage = Path(stage_name) / "payload"
+            shutil.copytree(payload, stage)
+            validate_payload(stage)
+            os.replace(stage, version_dir)
+    else:
+        validate_payload(version_dir)
     if update_pid is not None and not _wait_for_pid(update_pid):
         raise RuntimeError("旧版本进程未能退出，安装已取消")
-    if update_pid is None:
-        _stop_installed_app()
-    payload = _payload_dir()
-    for name in (MAIN_EXE, ANCHOR_EXE):
-        if not (payload / name).is_file():
-            raise RuntimeError(f"安装包缺少 {name}")
-    INSTALL_DIR.mkdir(parents=True, exist_ok=True)
-    for name in (MAIN_EXE, ANCHOR_EXE):
-        temporary = INSTALL_DIR / (name + ".new")
-        shutil.copy2(payload / name, temporary)
-        os.replace(temporary, INSTALL_DIR / name)
-    setup_source = Path(sys.executable if getattr(sys, "frozen", False) else __file__).resolve()
-    setup_destination = (INSTALL_DIR / SETUP_EXE).resolve()
-    if setup_source.is_file() and setup_source != setup_destination:
-        shutil.copy2(setup_source, INSTALL_DIR / SETUP_EXE)
-    _set_autostart(True)
+    _stop_installed_app()
+    state_files = [INSTALL_DIR / CURRENT_NAME, INSTALL_DIR / SETUP_EXE, *_shortcut_paths()]
+    previous = {path: path.read_bytes() if path.exists() else None for path in state_files}
+    run = _registry_snapshot(RUN_KEY).get(PRODUCT_ID)
+    uninstall = _registry_snapshot(UNINSTALL_KEY)
+    first_install = previous[INSTALL_DIR / CURRENT_NAME] is None and not uninstall
+    try:
+        current_temp = INSTALL_DIR / (CURRENT_NAME + ".new")
+        current_temp.write_text(json.dumps({
+            "version": manifest["version"],
+            "directory": version_dir.relative_to(INSTALL_DIR).as_posix(),
+        }), encoding="utf-8")
+        os.replace(current_temp, INSTALL_DIR / CURRENT_NAME)
+        setup_source = Path(sys.executable if getattr(sys, "frozen", False) else __file__).resolve()
+        setup_destination = (INSTALL_DIR / SETUP_EXE).resolve()
+        if setup_source != setup_destination:
+            temporary = setup_destination.with_suffix(".new")
+            shutil.copy2(setup_source, temporary)
+            os.replace(temporary, setup_destination)
+        _set_autostart(first_install or run is not None)
+        _write_uninstall_entry()
+        for shortcut in _shortcut_paths():
+            _create_shortcut(shortcut, _current_executable())
+    except Exception:
+        for path, content in previous.items():
+            if content is None:
+                path.unlink(missing_ok=True)
+            else:
+                temporary = path.with_suffix(path.suffix + ".rollback")
+                temporary.write_bytes(content)
+                os.replace(temporary, path)
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as key:
+            if run is None:
+                try:
+                    winreg.DeleteValue(key, PRODUCT_ID)
+                except FileNotFoundError:
+                    pass
+            else:
+                winreg.SetValueEx(key, PRODUCT_ID, 0, run[1], run[0])
+        _delete_uninstall_entry()
+        if uninstall:
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, UNINSTALL_KEY) as key:
+                for name, (value, kind) in uninstall.items():
+                    winreg.SetValueEx(key, name, 0, kind, value)
+        raise
     _remove_legacy_scheduled_task()
-    _write_uninstall_entry()
-    start_menu, desktop = _shortcut_paths()
-    _create_shortcut(start_menu, INSTALL_DIR / MAIN_EXE)
-    _create_shortcut(desktop, INSTALL_DIR / MAIN_EXE)
-    _launch_main(background=silent)
+    if launch:
+        _launch_main(background=silent)
 
 
-def uninstall(silent: bool = False) -> None:
+def uninstall(silent: bool = False) -> subprocess.Popen:
     _stop_installed_app()
     _set_autostart(False)
     _delete_uninstall_entry()
@@ -209,7 +362,7 @@ def uninstall(silent: bool = False) -> None:
             shortcut.unlink()
         except FileNotFoundError:
             pass
-    _schedule_remove(INSTALL_DIR)
+    return _schedule_remove(INSTALL_DIR)
 
 
 def _message_box(message: str) -> None:
@@ -222,12 +375,16 @@ def main() -> int:
     parser.add_argument("--uninstall", action="store_true")
     parser.add_argument("--update-pid", type=int)
     parser.add_argument("--silent", action="store_true")
+    parser.add_argument("--no-launch", action="store_true")
+    parser.add_argument("--verify-only", action="store_true")
     args, _ = parser.parse_known_args()
     try:
-        if args.uninstall:
+        if args.verify_only:
+            validate_payload(_payload_dir())
+        elif args.uninstall:
             uninstall(args.silent)
         else:
-            install(args.update_pid, args.silent)
+            install(args.update_pid, args.silent, launch=not args.no_launch)
         return 0
     except Exception as exc:
         if not args.silent:

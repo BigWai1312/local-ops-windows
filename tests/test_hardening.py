@@ -52,12 +52,58 @@ class HttpHarness:
         return status, payload, result_headers
 
 
+class RestartHelperTests(unittest.TestCase):
+    def test_restart_preserves_source_and_legacy_and_keeps_packaged_backend_headless(self):
+        cases = (
+            (False, "python.exe", ["--no-browser"]),
+            (True, "LocalOpsWindows.exe", []),
+            (True, "LocalOpsWindowsBackend.exe", ["--no-browser", "--background"]),
+        )
+        for frozen, executable, extra in cases:
+            with self.subTest(executable=executable), \
+                    mock.patch.object(server, "FROZEN", frozen), \
+                    mock.patch.object(server.sys, "executable", executable), \
+                    mock.patch.object(server, "pid_alive", return_value=False), \
+                    mock.patch.object(server.os, "execv") as execute:
+                self.assertEqual(server.restart_helper(123, 9603), 0)
+                expected = [executable]
+                if not frozen:
+                    expected.append(os.path.abspath(server.__file__))
+                expected.extend(["--preferred-port", "9603", *extra])
+                execute.assert_called_once_with(executable, expected)
+
+    def test_restart_does_not_spawn_while_old_process_is_alive(self):
+        with mock.patch.object(server, "pid_alive", return_value=True), \
+                mock.patch.object(server.time, "monotonic", side_effect=[0, 13]), \
+                mock.patch.object(server.os, "execv") as execute:
+            self.assertEqual(server.restart_helper(123, 9603), 1)
+            execute.assert_not_called()
+
+
 class HttpSecurityTests(unittest.TestCase):
     def setUp(self):
         self.h = HttpHarness()
 
     def tearDown(self):
         self.h.close()
+
+    def test_task_status_is_compact_and_never_scans_processes(self):
+        self.h.cfg.update(lambda cfg: cfg.update(apps=[
+            {"id": "aabb0001", "name": "fixture-task", "kind": "task",
+             "command": "private-command", "runToken": "private-token",
+             "lastExit": {"code": 0, "at": 123, "durationSec": 2}},
+            {"id": "aabb0002", "name": "fixture-service", "kind": "service",
+             "command": "private-command"},
+        ]))
+        with mock.patch.object(server, "get_state_snapshot") as scan, \
+                mock.patch.object(server, "ps_snapshot") as processes:
+            status, body, _ = self.h.request("GET", "/api/tasks/status")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(body["apps"]), 1)
+        self.assertEqual(body["apps"][0]["lastExit"]["status"], "succeeded")
+        self.assertEqual(set(body["apps"][0]), {"id", "name", "kind", "lastExit"})
+        scan.assert_not_called()
+        processes.assert_not_called()
 
     def _browser_headers(self, cookie=None, origin=None):
         expected = "http://127.0.0.1:%d" % self.h.port
@@ -77,6 +123,28 @@ class HttpSecurityTests(unittest.TestCase):
         self.assertIn("HttpOnly", value)
         self.assertIn("SameSite=Strict", value)
         return value.split(";", 1)[0]
+
+    def test_native_script_picker_reuses_command_rules_without_opening_dialog(self):
+        script = os.path.join(self.h.tmp.name, "fixture with spaces.py")
+        with open(script, "w", encoding="utf-8") as stream:
+            stream.write("print('fixture')\n")
+        with mock.patch.object(server, "pick_path") as picker:
+            status, body, _ = self.h.request(
+                "POST", "/api/pick", json.dumps({"what": "script", "path": script}),
+                {"Content-Type": "application/json"})
+        self.assertEqual(status, 200)
+        self.assertEqual(body["command"], server.command_for_script(script))
+        self.assertEqual(body["path"], script)
+        picker.assert_not_called()
+
+    def test_native_script_picker_rejects_invalid_paths_without_dialog(self):
+        with mock.patch.object(server, "pick_path") as picker:
+            for path in (None, 42, "relative.py", os.path.join(self.h.tmp.name, "missing.py")):
+                status, _, _ = self.h.request(
+                    "POST", "/api/pick", json.dumps({"what": "script", "path": path}),
+                    {"Content-Type": "application/json"})
+                self.assertEqual(status, 400)
+        picker.assert_not_called()
 
     def test_dns_rebinding_host_is_rejected_without_setting_cookie(self):
         status, body, headers = self.h.request(
@@ -235,6 +303,7 @@ class DeliveryMetadataTests(unittest.TestCase):
         self.assertTrue(body["ok"])
         self.assertEqual(body["status"], "ok")
         self.assertEqual(body["version"], server.APP_VERSION)
+        self.assertEqual(body["consolePid"], server.SELF_PID)
         self.assertEqual(body["schemaVersion"],
                          server.CURRENT_SCHEMA_VERSION)
         services.assert_not_called()

@@ -19,8 +19,9 @@ SENSITIVE_NAMES = {
     "token.json",
 }
 TEXT_SUFFIXES = {
-    ".bat", ".css", ".html", ".ini", ".js", ".json", ".md", ".mjs",
-    ".ps1", ".py", ".toml", ".txt", ".vbs", ".yaml", ".yml",
+    ".bat", ".cs", ".csproj", ".css", ".html", ".ini", ".js", ".json",
+    ".manifest", ".md", ".mjs", ".props", ".ps1", ".py", ".resx",
+    ".sln", ".targets", ".toml", ".txt", ".vbs", ".xaml", ".yaml", ".yml",
 }
 PLACEHOLDER_USERS = {"example", "alice", "bob", "john", "runneradmin"}
 WINDOWS_HOME_RE = re.compile(r"(?i)[A-Z]:[\\/]+Users[\\/]+([^\\/\s\"'<>]+)")
@@ -30,6 +31,12 @@ EMAIL_RE = re.compile(r"(?i)\b[A-Z0-9._%+-]+@([A-Z0-9.-]+\.[A-Z]{2,})\b")
 def iter_files():
     for path in ROOT.rglob("*"):
         if not path.is_file() or any(part.casefold() in EXCLUDED_DIRS for part in path.parts):
+            continue
+        relative = path.relative_to(ROOT)
+        if (
+            relative.parts[0].casefold() == "csharp"
+            and any(part.casefold() in {"bin", "obj"} for part in relative.parts[1:-1])
+        ):
             continue
         if path.suffix.casefold() in TEXT_SUFFIXES or path.name in {"LICENSE", "Makefile", "VERSION"}:
             yield path

@@ -17,11 +17,13 @@
 - [ ] `python tools/build_release.py --dist dist --verify-only` 通过。
 - [ ] `python tools/build_installer.py --output dist` 生成安装包和 SHA-256。
 - [ ] GitHub Actions `windows-latest` 全部通过。
+- [ ] C# 客户端测试与更新完整性、资源回退测试通过。
+- [ ] `tools/verify_installer.py` 验证内嵌 payload、解压代码隐私、隔离安装和冻结后台生命周期。
 
 ## Windows 生命周期
 
 - [ ] 普通用户权限下可启动，不要求管理员权限。
-- [ ] `/api/health` 和 `/api/state` 返回 `platform: windows`。
+- [ ] 桌面客户端仅监听 `127.0.0.1:9600-9609` 中的一个端口，未暴露到局域网或公网。
 - [ ] HTTP fixture 可启动、被识别、记录日志并被完整停止。
 - [ ] 任务退出码 0/130/其他值分别显示成功/取消/失败。
 - [ ] 外部进程认领和任意进程结束入口不可用。
@@ -30,6 +32,8 @@
 - [ ] 安装、覆盖更新和卸载只操作 `%LOCALAPPDATA%\Programs\LocalOpsWindows`。
 - [ ] HKCU Run 使用 `--background`，登录后不弹浏览器或终端窗口。
 - [ ] 安装版在未安装 Python 的环境可启动应用并运行受控锚点。
+- [ ] 第二次启动唤醒现有窗口；启用相应设置后最小化到托盘，托盘“显示主窗口/退出”可恢复或终止客户端。
+- [ ] C# 自包含安装版不依赖 WebView2、系统 Python 或已安装的 .NET Runtime。
 
 ## 数据与隐私
 
@@ -45,7 +49,8 @@
 - [ ] `THIRD_PARTY_NOTICES.md`、`ASSET_PROVENANCE.md` 和许可证原文随包提供。
 - [ ] 发行 zip 的 SHA-256 和字节数已记录。
 - [ ] `LocalOpsWindows-Setup.exe` 与 `.sha256` 均已附加到 GitHub Release。
-- [ ] 可重复构建验证通过，两次构建字节一致。
+- [ ] 源码 ZIP 可重复构建验证通过，两次构建字节一致；EXE 按各次实际构建记录 SHA-256。
+- [ ] `LocalOpsWindows.Update.json`、`LocalOpsWindows.Resources.json` 与安装包摘要及版本一致。
 
 ## GitHub
 

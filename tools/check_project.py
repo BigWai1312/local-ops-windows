@@ -112,6 +112,7 @@ def check_required_files() -> str:
         "requirements-build.txt",
         "Makefile",
         "server.py",
+        "desktop.py",
         "updater.py",
         "installer.py",
         "start.bat",
@@ -120,6 +121,7 @@ def check_required_files() -> str:
         "tools/build_installer.py",
         "tools/check_privacy.py",
         "tests/test_windows.py",
+        "tests/test_desktop.py",
         "static/index.html",
         "static/app.js",
     )
@@ -134,7 +136,10 @@ def check_asset_provenance() -> str:
     text = path.read_text(encoding="utf-8")
     tracked = [
         item
-        for folder in (STATIC / "assets", STATIC / "fonts")
+        for folder in (
+            STATIC / "assets", STATIC / "fonts",
+            ROOT / "csharp" / "LocalOpsWindows.Client" / "Assets",
+        )
         for item in sorted(folder.rglob("*"))
         if item.is_file()
     ]
@@ -201,7 +206,7 @@ def check_version() -> str:
 
 
 def check_python_syntax() -> str:
-    paths = [ROOT / "server.py"]
+    paths = [ROOT / name for name in ("server.py", "desktop.py", "installer.py", "updater.py")]
     paths.extend(sorted((ROOT / "tools").glob("*.py")))
     paths.extend(sorted((ROOT / "tests").glob("test_*.py")))
     for path in paths:
@@ -384,8 +389,9 @@ def check_javascript_bindings() -> str:
 def check_windows_launchers() -> str:
     batch = (ROOT / "start.bat").read_text(encoding="utf-8")
     vbs = (ROOT / "start_console_win.vbs").read_text(encoding="utf-8")
-    require("server.py" in batch and "py -3" in batch, "start.bat 缺少 Python 启动入口")
-    require("start.bat" in vbs and "WScript.Shell" in vbs,
+    require("dotnet run" in batch and "LocalOpsWindows.Client.csproj" in batch,
+            "start.bat 缺少桌面客户端启动入口")
+    require("start.bat" in vbs and "--background" in vbs and "WScript.Shell" in vbs,
             "start_console_win.vbs 缺少隐藏启动入口")
     return "start.bat + start_console_win.vbs"
 

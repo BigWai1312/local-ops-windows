@@ -595,6 +595,22 @@ class RuntimeStorageTests(unittest.TestCase):
             if not server.IS_WIN:
                 self.assertEqual(os.stat(log_path).st_mode & 0o777, 0o600)
 
+    def test_console_redirect_replaces_invalid_windowed_streams(self):
+        class InvalidStream:
+            def flush(self):
+                raise OSError(22, "Invalid argument")
+
+        with tempfile.TemporaryDirectory() as td:
+            with mock.patch.object(server, "LOGS_DIR", td), \
+                    mock.patch.object(server.sys, "stdout", InvalidStream()), \
+                    mock.patch.object(server.sys, "stderr", InvalidStream()):
+                stream = server.redirect_console_output()
+                print("windowed-client-log-ready", flush=True)
+            stream.close()
+
+            with open(os.path.join(td, "console.log"), encoding="utf-8") as f:
+                self.assertEqual(f.read(), "windowed-client-log-ready\n")
+
 
 class ProcessIdentityTests(unittest.TestCase):
     def test_random_marker_is_required_for_whole_process_group(self):

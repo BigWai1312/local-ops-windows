@@ -185,8 +185,9 @@ class ProjectReleaseManifestTests(unittest.TestCase):
             path.relative_to(release.ROOT).as_posix()
             for path in release.iter_release_files()
         }
-        self.assertIn("licenses/Geist-OFL-1.1.txt", names)
-        self.assertIn("licenses/Lucide-LICENSE.txt", names)
+        for required in release.REQUIRED_LICENSES:
+            with self.subTest(required=required):
+                self.assertIn(required, names)
 
 
 class AssetProvenanceGateTests(unittest.TestCase):
