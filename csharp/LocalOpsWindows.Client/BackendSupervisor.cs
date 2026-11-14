@@ -7,13 +7,15 @@ namespace LocalOpsWindows.Client;
 public sealed class BackendSupervisor : IAsyncDisposable
 {
     private readonly HttpClient _probe;
+    private readonly string? _expectedDataDirectory;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private Process? _ownedProcess;
     private int _ownedPort;
     private bool _disposed;
 
-    public BackendSupervisor(HttpMessageHandler? handler = null)
+    public BackendSupervisor(HttpMessageHandler? handler = null, string? dataDirectory = null)
     {
+        _expectedDataDirectory = dataDirectory ?? (ClientStorage.Installed ? ClientStorage.Data : null);
         _probe = new HttpClient(handler ?? new HttpClientHandler { UseProxy = false })
         {
             Timeout = TimeSpan.FromSeconds(8)
@@ -86,11 +88,14 @@ public sealed class BackendSupervisor : IAsyncDisposable
             startInfo.RedirectStandardError = true;
             startInfo.Environment["PYTHONDONTWRITEBYTECODE"] = "1";
             startInfo.Environment["PYTHONUTF8"] = "1";
-            startInfo.Environment["CONSOLE_DATA_DIR"] = Path.Combine(ClientStorage.Root, "data");
-            startInfo.Environment["CONSOLE_LOG_DIR"] = Path.Combine(ClientStorage.Root, "logs");
             Directory.CreateDirectory(ClientStorage.Temporary);
             startInfo.Environment["TEMP"] = ClientStorage.Temporary;
             startInfo.Environment["TMP"] = ClientStorage.Temporary;
+            if (ClientStorage.Installed)
+            {
+                startInfo.Environment["CONSOLE_DATA_DIR"] = ClientStorage.Data;
+                startInfo.Environment["CONSOLE_LOG_DIR"] = ClientStorage.Logs;
+            }
 
             _ownedProcess = Process.Start(startInfo)
                 ?? throw new InvalidOperationException("无法启动本地运维台后台进程。");
@@ -190,7 +195,27 @@ public sealed class BackendSupervisor : IAsyncDisposable
     private async Task<BackendCandidate> FindProductAsync(
         CancellationToken cancellationToken, int? expectedPid = null)
     {
-        foreach (var port in Enumerable.Range(9600, 10).Concat(Enumerable.Range(11000, 10)))
+        var ports = Enumerable.Range(9600, 10).ToList();
+        var endpointDirectory = _expectedDataDirectory
+            ?? Path.Combine(FindProjectRoot(AppContext.BaseDirectory), "data");
+        try
+        {
+            using var endpoint = JsonDocument.Parse(
+                File.ReadAllText(Path.Combine(endpointDirectory, "backend-endpoint.json")));
+            if (endpoint.RootElement.ValueKind == JsonValueKind.Object
+                && endpoint.RootElement.TryGetProperty("port", out var value)
+                && value.ValueKind == JsonValueKind.Number
+                && value.TryGetInt32(out var port) && port is >= 1024 and <= 65535)
+            {
+                ports.Remove(port);
+                ports.Insert(0, port);
+            }
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+        catch (JsonException) { }
+        // The file only suggests a port; health, storage and owned PID checks still apply.
+        foreach (var port in ports)
         {
             try
             {
@@ -206,6 +231,11 @@ public sealed class BackendSupervisor : IAsyncDisposable
                 await using var body = await response.Content.ReadAsStreamAsync(cancellationToken);
                 using var json = await JsonDocument.ParseAsync(body, cancellationToken: cancellationToken);
                 var root = json.RootElement;
+                if (root.ValueKind != JsonValueKind.Object) continue;
+                if (_expectedDataDirectory is not null && (!root.TryGetProperty("dataDirectory", out var dataDirectory)
+                    || dataDirectory.ValueKind != JsonValueKind.String
+                    || !string.Equals(dataDirectory.GetString(), _expectedDataDirectory, StringComparison.OrdinalIgnoreCase)))
+                    continue;
                 if (root.ValueKind == JsonValueKind.Object
                     && root.TryGetProperty("platform", out var platform)
                     && platform.ValueKind == JsonValueKind.String && platform.GetString() == "windows"

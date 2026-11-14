@@ -11,7 +11,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 EXCLUDED_DIRS = {
-    ".git", ".venv", "__pycache__", "build", "data", "dist", "logs",
+    ".git", ".venv", "__pycache__", "build", "data", "dist", "logs", "cache",
     "node_modules", "release", "tmp", "venv",
 }
 SENSITIVE_NAMES = {
@@ -20,7 +20,7 @@ SENSITIVE_NAMES = {
 }
 TEXT_SUFFIXES = {
     ".bat", ".cs", ".csproj", ".css", ".html", ".ini", ".js", ".json",
-    ".manifest", ".md", ".mjs", ".props", ".ps1", ".py", ".resx",
+    ".manifest", ".md", ".mjs", ".props", ".ps1", ".py", ".resx", ".iss", ".isl",
     ".sln", ".targets", ".toml", ".txt", ".vbs", ".xaml", ".yaml", ".yml",
 }
 PLACEHOLDER_USERS = {"example", "alice", "bob", "john", "runneradmin"}

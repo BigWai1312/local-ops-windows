@@ -15,7 +15,6 @@ namespace LocalOpsWindows.Client;
 
 public partial class MainWindow : Window
 {
-    private const string SettingsKey = @"Software\LocalOpsWindows\Client";
     private readonly string[] _args;
     private readonly bool _demoMode;
     private readonly BackendSupervisor _backend;
@@ -27,6 +26,7 @@ public partial class MainWindow : Window
     private Forms.NotifyIcon? _tray;
     private System.Drawing.Icon? _trayAppIcon;
     private bool _quitting;
+    private string _closeBehavior = "tray";
     private bool _loaded;
     private bool _pollInFlight;
     private bool _logInFlight;
@@ -84,11 +84,15 @@ public partial class MainWindow : Window
             SetupTray();
         }
         RestoreWindowPosition();
+        if (double.TryParse(ReadSetting("CardWidth"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var cardWidth))
+            CardWidthSlider.Value = Math.Clamp(cardWidth, 300, 480);
         var savedTheme = ReadSetting("Theme") ?? "system";
         SelectComboTag(ThemeCombo, savedTheme);
         ApplyTheme(savedTheme);
         MinimizeToTrayCheck.IsChecked = !_demoMode && !string.Equals(
             ReadSetting("MinimizeToTray"), "false", StringComparison.OrdinalIgnoreCase);
+        _closeBehavior = ReadSetting("CloseBehavior") == "exit" ? "exit" : "tray";
+        SelectComboTag(CloseBehaviorCombo, _closeBehavior);
         AutostartCheck.IsChecked = IsAutostartEnabled();
         AutostartCheck.IsEnabled = !_demoMode && IsInstalledClient();
         AutostartCheck.ToolTip = IsInstalledClient()
@@ -121,10 +125,10 @@ public partial class MainWindow : Window
             RuntimeInfoText.Text = "演示模式\n仅显示虚构数据，不连接本机后台，也不会修改真实项目。";
             LastSyncText.Text = "演示数据 · 不连接后台";
             SetBackendStatus("演示模式", "仅显示虚构数据", "AccentBrush");
-            SetView(LaunchpadView, "启动台", "管理已登记的服务与批处理任务");
+            SetView(LaunchpadView, "启动台");
             if (_args.Contains("--services", StringComparer.OrdinalIgnoreCase))
             {
-                SetView(ServicesView, "服务监控", "仅展示当前用户可见的监听服务，不认领外部进程");
+                SetView(ServicesView, "服务监控");
             }
             if (_args.Contains("--editor", StringComparer.OrdinalIgnoreCase))
                 _ = Dispatcher.BeginInvoke(new Action(() => OpenEditor(_state.Apps.FirstOrDefault())));
@@ -194,7 +198,7 @@ public partial class MainWindow : Window
             RuntimeInfoText.Text =
                 $"版本 v{next.Version}\n控制台端口 :{next.ConsolePort}\n" +
                 $"工作目录 {next.ConsoleCwd ?? "—"}\n" +
-                "数据目录位于当前用户 AppData，不会写入仓库。";
+                $"数据目录 {ClientStorage.Data}\n日志目录 {ClientStorage.Logs}";
             LastSyncText.Text = $"最后同步 {DateTime.Now:HH:mm:ss}";
             SetBackendStatus("已连接", $"本机回环 :{next.ConsolePort}", "AccentBrush");
             _pollTimer.Interval = TimeSpan.FromSeconds(5);
@@ -238,6 +242,7 @@ public partial class MainWindow : Window
             {
                 AppsList.SelectedItems.Add(app);
             }
+            UpdateLaunchMonitor();
         }
 
         if (ServicesView.Visibility != Visibility.Visible) return;
@@ -287,7 +292,7 @@ public partial class MainWindow : Window
                 || (state == "canceled" && !app.Running && app.LastExit?.EffectiveStatus is "canceled" or "stopped")
                 || (state == "warning" && app.HasWarning))
             && (string.IsNullOrWhiteSpace(query)
-                || $"{app.Name} {app.Command} {app.Cwd} {app.Port} {app.Pid}"
+                || $"{app.Name} {app.Command} {app.Notes} {app.Cwd} {app.Port} {app.Pid}"
                     .Contains(query, StringComparison.OrdinalIgnoreCase)));
     }
 
@@ -386,33 +391,32 @@ public partial class MainWindow : Window
 
     private void ShowLaunchpad(object sender, RoutedEventArgs e)
     {
-        SetView(LaunchpadView, "启动台", "管理已登记的服务与批处理任务");
+        SetView(LaunchpadView, "启动台");
     }
 
     private void ShowServices(object sender, RoutedEventArgs e)
     {
-        SetView(ServicesView, "服务监控", "仅展示当前用户可见的监听服务，不认领外部进程");
+        SetView(ServicesView, "服务监控");
     }
 
     private async void ShowLogs(object sender, RoutedEventArgs e)
     {
-        SetView(LogsView, "日志中心", "控制台与已登记项目的最近输出");
+        SetView(LogsView, "日志中心");
         await RefreshLogAsync();
     }
 
     private void ShowSettings(object sender, RoutedEventArgs e)
     {
-        SetView(SettingsView, "设置", "客户端行为、主题与发行更新");
+        SetView(SettingsView, "设置");
     }
 
-    private void SetView(Grid visible, string title, string subtitle)
+    private void SetView(Grid visible, string title)
     {
         LaunchpadView.Visibility = visible == LaunchpadView ? Visibility.Visible : Visibility.Collapsed;
         ServicesView.Visibility = visible == ServicesView ? Visibility.Visible : Visibility.Collapsed;
         LogsView.Visibility = visible == LogsView ? Visibility.Visible : Visibility.Collapsed;
         SettingsView.Visibility = visible == SettingsView ? Visibility.Visible : Visibility.Collapsed;
         PageTitleText.Text = title;
-        PageSubtitleText.Text = subtitle;
         foreach (var (button, view) in new[]
         {
             (LaunchpadNav, LaunchpadView), (ServicesNav, ServicesView),
@@ -504,7 +508,7 @@ public partial class MainWindow : Window
                 if (dialog.RequestedAction == "logs")
                 {
                     _logTarget = app.Id;
-                    SetView(LogsView, "日志中心", $"{app.Name} 的最近输出");
+                    SetView(LogsView, "日志中心");
                     await RefreshLogAsync();
                 }
                 else OpenEditor(app, repairAction: dialog.RequestedAction);
@@ -542,7 +546,7 @@ public partial class MainWindow : Window
         }
 
         var choice = MessageBox.Show(
-            $"确定删除“{app.Name}”吗？\n后台会先按安全所有权规则停止它，并移除登记信息。",
+            $"确定删除“{app.Name}”吗？\n该项目将停止运行，并从启动台移除。",
             "删除项目", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
         if (choice != MessageBoxResult.OK)
         {
@@ -576,7 +580,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (MessageBox.Show($"确定停止选中的 {selected.Count} 个项目吗？\n每个项目都会单独执行所有权校验。",
+        if (MessageBox.Show($"确定停止选中的 {selected.Count} 个项目吗？",
                 "批量停止", MessageBoxButton.OKCancel, MessageBoxImage.Warning)
             != MessageBoxResult.OK)
         {
@@ -761,7 +765,7 @@ public partial class MainWindow : Window
         if (((FrameworkElement)sender).DataContext is AppSnapshot app)
         {
             _logTarget = app.Id;
-            SetView(LogsView, "日志中心", $"{app.Name} 的最近输出");
+            SetView(LogsView, "日志中心");
             await RefreshLogAsync();
         }
     }
@@ -821,6 +825,7 @@ public partial class MainWindow : Window
         try
         {
             var text = await _api.GetLogAsync(target, _lifetime.Token);
+            if (target == "console" && TechnicalLogCheck.IsChecked != true) text = UserLog(text);
             if (target != _logTarget || _quitting) return;
             var changedTarget = _displayedLogTarget != target;
             // Do not replace the text being selected; the next refresh will pick up newer output.
@@ -961,22 +966,20 @@ public partial class MainWindow : Window
             if (install)
             {
                 UpdateStatusText.Text = "正在下载安装包…";
-                var directory = Path.Combine(ClientStorage.Root, "cache", "updates");
-                var temporary = Path.Combine(ClientStorage.Root, "cache", "temp");
-                Directory.CreateDirectory(temporary);
+                var directory = Path.Combine(ClientStorage.Cache, "updates");
                 var path = await _updater.DownloadInstallerAsync(update, directory,
                     new Progress<int>(percent => UpdateStatusText.Text = $"下载安装包 {percent}%"), timeout.Token);
                 var start = new ProcessStartInfo(path) { UseShellExecute = false, WorkingDirectory = directory };
-                foreach (var argument in new[]
-                {
-                    "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
-                    $"/UPDATEPID={Environment.ProcessId}", $"/DIR={ClientStorage.Root}",
-                    "/LAUNCHAFTERUPDATE=1",
-                    IsAutostartEnabled() ? "/MERGETASKS=autostart" : "/MERGETASKS=!autostart",
-                })
-                    start.ArgumentList.Add(argument);
-                start.Environment["TEMP"] = temporary;
-                start.Environment["TMP"] = temporary;
+                start.ArgumentList.Add("/VERYSILENT");
+                start.ArgumentList.Add("/SUPPRESSMSGBOXES");
+                start.ArgumentList.Add("/NORESTART");
+                start.ArgumentList.Add($"/UPDATEPID={Environment.ProcessId}");
+                start.ArgumentList.Add($"/DIR={ClientStorage.Root}");
+                start.ArgumentList.Add("/LAUNCHAFTERUPDATE=1");
+                start.ArgumentList.Add(IsAutostartEnabled() ? "/MERGETASKS=autostart" : "/MERGETASKS=!autostart");
+                Directory.CreateDirectory(ClientStorage.Temporary);
+                start.Environment["TEMP"] = ClientStorage.Temporary;
+                start.Environment["TMP"] = ClientStorage.Temporary;
                 using var installer = Process.Start(start)
                     ?? throw new InvalidOperationException("无法启动安装器。");
                 ExitFromButton(this, e);
@@ -1014,8 +1017,7 @@ public partial class MainWindow : Window
             {
                 return;
             }
-            using var key = Registry.CurrentUser.CreateSubKey(SettingsKey);
-            key?.SetValue("Theme", theme);
+            ClientStorage.Write("Theme", theme);
         }
         catch (Exception ex)
         {
@@ -1035,37 +1037,41 @@ public partial class MainWindow : Window
         var colors = string.Equals(theme, "dark", StringComparison.OrdinalIgnoreCase)
             ? new Dictionary<string, string>
             {
-                ["CanvasBrush"] = "#20272B", ["SurfaceBrush"] = "#2A3338",
-                ["SurfaceRaisedBrush"] = "#344047", ["SurfaceHoverBrush"] = "#3B4B50",
-                ["GlassBrush"] = "#DB202C30", ["GlassStrongBrush"] = "#F0324147",
-                ["PopupBrush"] = "#324147", ["TrackBrush"] = "#4A5A60",
-                ["GlassHoverBrush"] = "#E8455960", ["GlassPressedBrush"] = "#D7384E55",
-                ["InsetBrush"] = "#C0324147", ["InputBrush"] = "#D0324147",
-                ["SoftBorderBrush"] = "#527079", ["AccentStrongBrush"] = "#A5E8D9",
-                ["InfoSoftBrush"] = "#304C60",
-                ["BorderBrush"] = "#4A5A60", ["TextBrush"] = "#F1F5F4",
-                ["MutedTextBrush"] = "#D6DFE1", ["DimTextBrush"] = "#D0DADD",
-                ["AccentBrush"] = "#A5E8D9", ["AccentSoftBrush"] = "#25483F",
-                ["WarningBrush"] = "#FFE1A6", ["WarningSoftBrush"] = "#4C3B20",
-                ["DangerBrush"] = "#FFC0C5", ["DangerSoftBrush"] = "#4D292E",
-                ["InfoBrush"] = "#C2DDF8",
+                ["CanvasBrush"] = "#1C1C1E", ["SurfaceBrush"] = "#2C2C2E",
+                ["SurfaceRaisedBrush"] = "#3A3A3C", ["SurfaceHoverBrush"] = "#444446",
+                ["GlassBrush"] = "#1C1C1E", ["GlassStrongBrush"] = "#2C2C2E",
+                ["PopupBrush"] = "#3A3A3C", ["TrackBrush"] = "#525256",
+                ["GlassHoverBrush"] = "#444446", ["GlassPressedBrush"] = "#242426",
+                ["InsetBrush"] = "#2C2C2E", ["InputBrush"] = "#3A3A3C",
+                ["SoftBorderBrush"] = "#505054", ["AccentStrongBrush"] = "#A0DECD",
+                ["InfoSoftBrush"] = "#243C57",
+                ["BorderBrush"] = "#646468", ["TextBrush"] = "#F5F5F7",
+                ["MutedTextBrush"] = "#D0D0D6", ["DimTextBrush"] = "#B8B8C1",
+                ["AccentBrush"] = "#A0DECD", ["AccentSoftBrush"] = "#233C36",
+                ["AccentFillBrush"] = "#176452", ["ButtonHighlightBrush"] = "#386E6E73",
+                ["DisabledTextBrush"] = "#B8B8C1", ["DisabledSurfaceBrush"] = "#323234",
+                ["WarningBrush"] = "#FFD480", ["WarningSoftBrush"] = "#4C3B20",
+                ["DangerBrush"] = "#FFA8AF", ["DangerSoftBrush"] = "#4D292E",
+                ["InfoBrush"] = "#AFD4FF",
             }
             : new Dictionary<string, string>
             {
-                ["CanvasBrush"] = "#EAF4F7", ["SurfaceBrush"] = "#F5FBFD",
-                ["SurfaceRaisedBrush"] = "#EDF6F9", ["SurfaceHoverBrush"] = "#E2F4F0",
-                ["GlassBrush"] = "#BDF1F7F9", ["GlassStrongBrush"] = "#F0FBFDFE",
-                ["PopupBrush"] = "#FBFDFE", ["TrackBrush"] = "#D6E6EB",
-                ["GlassHoverBrush"] = "#E8FFFFFF", ["GlassPressedBrush"] = "#D7E9F2F4",
-                ["InsetBrush"] = "#9FFFFFFF", ["InputBrush"] = "#BFFFFFFF",
-                ["SoftBorderBrush"] = "#BBD6DE", ["AccentStrongBrush"] = "#09665E",
-                ["InfoSoftBrush"] = "#D8EDF6",
-                ["BorderBrush"] = "#8DB8C4", ["TextBrush"] = "#18323A",
-                ["MutedTextBrush"] = "#49666E", ["DimTextBrush"] = "#405D65",
-                ["AccentBrush"] = "#09665E", ["AccentSoftBrush"] = "#CDEEE8",
+                ["CanvasBrush"] = "#F2F2F5", ["SurfaceBrush"] = "#FFFFFF",
+                ["SurfaceRaisedBrush"] = "#FFFFFF", ["SurfaceHoverBrush"] = "#E9E9EF",
+                ["GlassBrush"] = "#F2F2F5", ["GlassStrongBrush"] = "#FFFFFF",
+                ["PopupBrush"] = "#FFFFFF", ["TrackBrush"] = "#D5D5DC",
+                ["GlassHoverBrush"] = "#E9E9EF", ["GlassPressedBrush"] = "#DCDCE4",
+                ["InsetBrush"] = "#FFFFFF", ["InputBrush"] = "#FFFFFF",
+                ["SoftBorderBrush"] = "#D5D5DD", ["AccentStrongBrush"] = "#125C50",
+                ["InfoSoftBrush"] = "#E0EDFF",
+                ["BorderBrush"] = "#B8B8C2", ["TextBrush"] = "#202023",
+                ["MutedTextBrush"] = "#50505B", ["DimTextBrush"] = "#60606C",
+                ["AccentBrush"] = "#125C50", ["AccentSoftBrush"] = "#DFEEEA",
+                ["AccentFillBrush"] = "#176452", ["ButtonHighlightBrush"] = "#D9FFFFFF",
+                ["DisabledTextBrush"] = "#62626E", ["DisabledSurfaceBrush"] = "#E8E8EE",
                 ["WarningBrush"] = "#80500A", ["WarningSoftBrush"] = "#FCEBCF",
-                ["DangerBrush"] = "#963947", ["DangerSoftBrush"] = "#F8DEE3",
-                ["InfoBrush"] = "#286A91",
+                ["DangerBrush"] = "#A72B3B", ["DangerSoftBrush"] = "#F8DEE3",
+                ["InfoBrush"] = "#075DBB",
             };
 
         foreach (var (key, value) in theme == "dark" ? _clientResources.Dark : _clientResources.Light)
@@ -1130,6 +1136,7 @@ public partial class MainWindow : Window
 
     private void OnAppSelected(object sender, SelectionChangedEventArgs e)
     {
+        UpdateLaunchMonitor();
         if (AppsList.SelectedItem is AppSnapshot app)
         {
             ActivityText.Text = $"{app.Name}\n{app.StatusLabel} · {app.PortLabel}\n" +
@@ -1180,21 +1187,13 @@ public partial class MainWindow : Window
         var source = HwndSource.FromHwnd(handle);
         if (source?.CompositionTarget is not null)
         {
-            source.CompositionTarget.BackgroundColor = Colors.Transparent;
+            source.CompositionTarget.BackgroundColor = ((SolidColorBrush)FindResource("CanvasBrush")).Color;
         }
 
         if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22621))
         {
-            var margins = new NativeBackdrop.Margins { Left = -1, Right = -1, Top = -1, Bottom = -1 };
-            NativeBackdrop.DwmExtendFrameIntoClientArea(handle, ref margins);
-            var backdrop = 3;
             var corners = 2;
-            NativeBackdrop.DwmSetWindowAttribute(handle, 38, ref backdrop, sizeof(int));
             NativeBackdrop.DwmSetWindowAttribute(handle, 33, ref corners, sizeof(int));
-        }
-        else
-        {
-            Background = FindResource("CanvasBrush") as Brush;
         }
     }
 
@@ -1279,17 +1278,6 @@ public partial class MainWindow : Window
         internal static extern int DwmSetWindowAttribute(
             IntPtr window, int attribute, ref int value, int size);
 
-        [StructLayout(LayoutKind.Sequential)]
-        internal struct Margins
-        {
-            internal int Left;
-            internal int Right;
-            internal int Top;
-            internal int Bottom;
-        }
-
-        [DllImport("dwmapi.dll")]
-        internal static extern int DwmExtendFrameIntoClientArea(IntPtr window, ref Margins margins);
     }
 
     private void OnWindowSizeChanged(object sender, SizeChangedEventArgs e)
@@ -1304,11 +1292,17 @@ public partial class MainWindow : Window
             return;
         }
 
-        var compact = (ActualWidth > 0 ? ActualWidth : Width) < 1250;
+        var compact = (ActualWidth > 0 ? ActualWidth : Width) < 1250
+            || (ActualHeight > 0 ? ActualHeight : Height) < 740;
         LaunchDetailColumn.Width = new GridLength(compact ? 0 : 290);
         LaunchDetailGap.Width = new GridLength(compact ? 0 : 16);
-        LaunchDetailPanel.Visibility = compact ? Visibility.Collapsed : Visibility.Visible;
-        SidebarColumn.Width = new GridLength(compact ? 184 : 208);
+        LaunchDetailPanel.Visibility = Visibility.Visible;
+        Grid.SetColumn(LaunchDetailPanel, compact ? 0 : 2);
+        Grid.SetRow(LaunchDetailPanel, compact ? 0 : 1);
+        LaunchDetailPanel.Padding = compact ? new Thickness(0, 0, 0, 10) : new Thickness(16, 0, 0, 0);
+        LaunchDetailPanel.BorderThickness = compact ? new Thickness(0, 0, 0, 1) : new Thickness(1, 0, 0, 0);
+        SidebarColumn.Width = new GridLength(76);
+        if (_launchCompact != compact) { _launchCompact = compact; UpdateLaunchMonitor(); }
         ServiceDetailColumn.Width = new GridLength(compact ? 0 : 280);
         ServiceDetailGap.Width = new GridLength(compact ? 0 : 14);
         Grid.SetColumn(ServiceDetailPanel, compact ? 0 : 2);
@@ -1419,11 +1413,30 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (WindowState == WindowState.Minimized && MinimizeToTrayCheck.IsChecked == true)
+        if (_tray is { Visible: true } && _closeBehavior == "tray")
         {
             e.Cancel = true;
+            SaveWindowPosition();
             Hide();
-            _tray?.ShowBalloonTip(1200, "本地运维台 Windows", "已最小化到通知区域", Forms.ToolTipIcon.Info);
+        }
+    }
+
+    private void CloseWindow(object sender, RoutedEventArgs e) => Close();
+
+    private void CloseBehaviorChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!_loaded || SelectedTag(CloseBehaviorCombo) is not ("tray" or "exit")
+            || SelectedTag(CloseBehaviorCombo) == _closeBehavior) return;
+        var behavior = SelectedTag(CloseBehaviorCombo)!;
+        try
+        {
+            if (!_demoMode) ClientStorage.Write("CloseBehavior", behavior);
+            _closeBehavior = behavior;
+        }
+        catch (Exception ex)
+        {
+            SelectComboTag(CloseBehaviorCombo, _closeBehavior);
+            ShowOperationError(ex, "无法保存窗口设置");
         }
     }
 
@@ -1455,8 +1468,7 @@ public partial class MainWindow : Window
 
         try
         {
-            using var key = Registry.CurrentUser.CreateSubKey(SettingsKey);
-            key?.SetValue("MinimizeToTray", MinimizeToTrayCheck.IsChecked == true ? "true" : "false");
+            ClientStorage.Write("MinimizeToTray", MinimizeToTrayCheck.IsChecked == true ? "true" : "false");
         }
         catch (Exception ex)
         {
@@ -1542,8 +1554,7 @@ public partial class MainWindow : Window
         {
             return null;
         }
-        using var key = Registry.CurrentUser.OpenSubKey(SettingsKey);
-        return key?.GetValue(name) as string ?? ClientStorage.Read(name);
+        return ClientStorage.Read(name);
     }
 
     private bool IsAutostartEnabled()
@@ -1564,8 +1575,7 @@ public partial class MainWindow : Window
 
     private static bool IsInstalledClient()
     {
-        var executable = Environment.ProcessPath;
-        return !string.IsNullOrWhiteSpace(executable) && ClientStorage.Installed;
+        return ClientStorage.Installed;
     }
 
     private static void SelectComboTag(ComboBox combo, string tag)

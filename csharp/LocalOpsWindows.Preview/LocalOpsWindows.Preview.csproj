@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>LocalOpsWindows.Preview</AssemblyName>
+    <RootNamespace>LocalOpsWindows.Preview</RootNamespace>
+    <ApplicationIcon>..\LocalOpsWindows.Client\Assets\local-ops.ico</ApplicationIcon>
+  </PropertyGroup>
+  <ItemGroup>
+    <Content Include="..\..\static\icons\*.svg" Link="Assets\Icons\%(Filename)%(Extension)">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Resource Include="..\LocalOpsWindows.Client\Assets\local-ops.png" Link="Assets\local-ops.png"/>
+    <Resource Include="..\LocalOpsWindows.Client\Assets\local-ops.ico" Link="Assets\local-ops.ico"/>
+    <Content Include="..\..\licenses\Lucide-LICENSE.txt" Link="licenses\Lucide-LICENSE.txt" CopyToOutputDirectory="PreserveNewest"/>
+    <Content Include="..\..\LICENSE" Link="licenses\LICENSE" CopyToOutputDirectory="PreserveNewest"/>
+    <Content Include="..\..\NOTICE.md" Link="licenses\NOTICE.md" CopyToOutputDirectory="PreserveNewest"/>
+  </ItemGroup>
+</Project>

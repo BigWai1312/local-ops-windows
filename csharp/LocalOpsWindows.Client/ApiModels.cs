@@ -23,6 +23,7 @@ public sealed class AppSnapshot
     [JsonPropertyName("id")] public string Id { get; set; } = "";
     [JsonPropertyName("name")] public string Name { get; set; } = "";
     [JsonPropertyName("command")] public string Command { get; set; } = "";
+    [JsonPropertyName("notes")] public string Notes { get; set; } = "";
     [JsonPropertyName("cwd")] public string? Cwd { get; set; }
     [JsonPropertyName("port")] public int? Port { get; set; }
     [JsonPropertyName("kind")] public string Kind { get; set; } = "service";

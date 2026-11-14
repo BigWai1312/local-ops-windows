@@ -11,7 +11,7 @@ public sealed record PortProcess(int Pid, int Port, long Created, string ImagePa
 {
     public static PortProcess Inspect(int port, int? expectedPid = null, long? expectedCreated = null)
     {
-        if (port is < 1 or > 65535 || IsManagementPort(port))
+        if (port is < 1 or > 65535 || port is >= 9600 and <= 9609)
             throw new InvalidOperationException("此端口不支持强制停止（包含运维台自己的管理端口）。");
         var owners = ListenerPids(port);
         if (owners.Count != 1)
@@ -30,7 +30,7 @@ public sealed record PortProcess(int Pid, int Port, long Created, string ImagePa
 
     public void Stop()
     {
-        if (Port is < 1 or > 65535 || IsManagementPort(Port))
+        if (Port is < 1 or > 65535 || Port is >= 9600 and <= 9609)
             throw new InvalidOperationException("此端口不支持强制停止。");
         // Validate and terminate through the same handle so PID reuse cannot redirect the operation.
         using var handle = Open(Pid, terminate: true);
@@ -53,9 +53,6 @@ public sealed record PortProcess(int Pid, int Port, long Created, string ImagePa
         handle.Dispose();
         throw new Win32Exception(error);
     }
-
-    private static bool IsManagementPort(int port)
-        => port is >= 9600 and <= 9609 or >= 11000 and <= 11009;
 
     private static PortProcess ReadIdentity(SafeProcessHandle handle, int pid, int port)
     {

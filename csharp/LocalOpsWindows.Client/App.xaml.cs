@@ -5,6 +5,12 @@ namespace LocalOpsWindows.Client;
 
 public partial class App : System.Windows.Application
 {
+    public App()
+    {
+        // Keep the small dashboard independent of GPU and virtual-display compositing.
+        System.Windows.Media.RenderOptions.ProcessRenderMode = System.Windows.Interop.RenderMode.SoftwareOnly;
+    }
+
     private const string MutexName = "LocalOpsWindows.CSharpClient";
     private static Mutex? _instanceMutex;
     private static EventWaitHandle? _showEvent;

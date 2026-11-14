@@ -26,26 +26,68 @@ def _free_port():
 
 @unittest.skipIf(not server.IS_WIN, "Windows 适配层专属测试")
 class WindowsParsingTests(unittest.TestCase):
-    def test_management_ports_fall_back_and_preserve_restart_preference(self):
-        for preferred in (None, 11003):
-            attempted = []
-            instance = object()
+    def test_project_notes_validation_and_config_roundtrip(self):
+        for value in (None, 123, "x" * 2001):
+            self.assertIsNotNone(server.validate_app_fields({"notes": value}, partial=True)[1])
+        fields, error = server.validate_app_fields({"notes": "  fixture note\nsecond line  "}, partial=True)
+        self.assertIsNone(error)
+        self.assertEqual(fields, {"notes": "fixture note\nsecond line"})
+        self.assertNotIn("notes", server.validate_app_fields({}, partial=True)[0])
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "config.json")
+            config = server.Config(path)
+            app = {**server.Config.APP_DEFAULT, "id": "notes001", "name": "Fixture", "command": "echo fixture", **fields}
+            config.update(lambda state: state["apps"].append(app))
+            loaded = server.Config(path).snapshot()["apps"][0]
+            self.assertEqual(loaded["notes"], fields["notes"])
 
-            def bind(address, *_args):
-                attempted.append(address)
-                if address[1] < server.PORT_FALLBACK_START:
-                    raise PermissionError("Reserved port fixture")
-                return instance
+    def test_backend_falls_back_when_legacy_ports_are_reserved(self):
+        fallback = mock.Mock(server_address=("127.0.0.1", 54321))
+        with mock.patch.object(server, "_ensure_private_dir"), \
+                mock.patch.object(server, "start_log_maintenance"), \
+                mock.patch.object(server, "Config"), \
+                mock.patch.object(server, "ConsoleServer",
+                                  side_effect=[PermissionError("reserved")] * 10 + [fallback]) as factory:
+            console, port = server.create_console_server()
+        self.assertIs(console, fallback)
+        self.assertEqual(port, 54321)
+        self.assertEqual(factory.call_args.args[0], ("127.0.0.1", 0))
 
-            with mock.patch.object(server, "_ensure_private_dir"), \
-                    mock.patch.object(server, "start_log_maintenance"), \
-                    mock.patch.object(server, "Config"), \
-                    mock.patch.object(server, "ConsoleServer", side_effect=bind):
-                result, port = server.create_console_server(preferred)
-            self.assertIs(result, instance)
-            self.assertEqual(port, preferred or 11000)
-            self.assertTrue(all(address[0] == "127.0.0.1" for address in attempted))
-            self.assertEqual(len(attempted), 1 if preferred else 11)
+    def test_backend_honors_free_preferred_port_outside_legacy_range(self):
+        expected = mock.Mock(server_address=("127.0.0.1", 54321))
+        with mock.patch.object(server, "_ensure_private_dir"), \
+                mock.patch.object(server, "start_log_maintenance"), \
+                mock.patch.object(server, "Config"), \
+                mock.patch.object(server, "ConsoleServer", return_value=expected) as factory:
+            self.assertEqual(server.create_console_server(54321), (expected, 54321))
+        self.assertEqual(factory.call_args.args[0], ("127.0.0.1", 54321))
+
+    def test_log_tail_preserves_utf8_headers_and_native_command_output(self):
+        header = "===== 启动于 fixture ====="
+        native = "fixture 中文 空格"
+        # Use the actual Windows OEM page, including on non-Chinese CI hosts.
+        encoded = native.encode("oem", errors="replace")
+        expected_native = encoded.decode("oem")
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "mixed.log")
+            with open(path, "wb") as stream:
+                stream.write(header.encode("utf-8") + b"\r\n")
+                stream.write(encoded + b"\r\n\r\n")
+                stream.write("UTF-8 中文".encode("utf-8") + b"\r\n")
+            self.assertEqual(server._tail_file_lines(path, 4),
+                             [header, expected_native, "", "UTF-8 中文"])
+            self.assertEqual(server._tail_file_lines(path, 1), ["UTF-8 中文"])
+
+    def test_hidden_anchor_forwards_command_stdout_and_stderr(self):
+        anchor = os.path.join(server.BASE_DIR, "tools", "win_anchor.py")
+        completed = subprocess.run(
+            [sys.executable, anchor, "console-run:output-fixture",
+             "echo STDOUT_FIXTURE & echo STDERR_FIXTURE 1>&2 & exit /b 7"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=20, creationflags=subprocess.CREATE_NO_WINDOW)
+        self.assertEqual(completed.returncode, 7)
+        self.assertIn(b"STDOUT_FIXTURE", completed.stdout)
+        self.assertIn(b"STDERR_FIXTURE", completed.stderr)
 
     def test_netstat_parse(self):
         text = (

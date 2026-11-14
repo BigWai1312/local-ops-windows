@@ -304,6 +304,8 @@ class DeliveryMetadataTests(unittest.TestCase):
         self.assertEqual(body["status"], "ok")
         self.assertEqual(body["version"], server.APP_VERSION)
         self.assertEqual(body["consolePid"], server.SELF_PID)
+        self.assertEqual(body["dataDirectory"], self.h.tmp.name)
+        self.assertEqual(body["logsDirectory"], logs)
         self.assertEqual(body["schemaVersion"],
                          server.CURRENT_SCHEMA_VERSION)
         services.assert_not_called()

@@ -1,0 +1,176 @@
+<Window x:Class="LocalOpsWindows.Preview.MainWindow"
+ xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+ xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+ xmlns:local="clr-namespace:LocalOpsWindows.Preview"
+ xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
+ Title="Local Ops Windows · WPF 界面样稿" Width="1440" Height="900" MinWidth="820" MinHeight="560" Style="{StaticResource {x:Type Window}}"
+ Icon="Assets/local-ops.ico" WindowStyle="None" ResizeMode="CanResize" WindowStartupLocation="CenterScreen"
+ PreviewKeyDown="OnKeyDown">
+ <shell:WindowChrome.WindowChrome><shell:WindowChrome CaptionHeight="38" ResizeBorderThickness="6" GlassFrameThickness="0" CornerRadius="0" UseAeroCaptionButtons="False"/></shell:WindowChrome.WindowChrome>
+ <Window.Resources>
+  <Style x:Key="ProjectBadge" TargetType="Border">
+   <Setter Property="Background" Value="{DynamicResource RailBrush}"/><Setter Property="CornerRadius" Value="4"/><Setter Property="Padding" Value="6,1"/>
+   <Style.Triggers>
+    <DataTrigger Binding="{Binding Status}" Value="运行中"><Setter Property="Background" Value="{DynamicResource AccentSoftBrush}"/></DataTrigger>
+    <DataTrigger Binding="{Binding Status}" Value="已完成"><Setter Property="Background" Value="{DynamicResource AccentSoftBrush}"/></DataTrigger>
+    <DataTrigger Binding="{Binding Status}" Value="失败"><Setter Property="Background" Value="{DynamicResource DangerSoftBrush}"/></DataTrigger>
+    <DataTrigger Binding="{Binding Status}" Value="端口占用"><Setter Property="Background" Value="{DynamicResource WarnSoftBrush}"/></DataTrigger>
+   </Style.Triggers>
+  </Style>
+  <Style x:Key="ProjectBadgeText" TargetType="TextBlock" BasedOn="{StaticResource Muted}">
+   <Setter Property="FontSize" Value="10"/>
+   <Style.Triggers>
+    <DataTrigger Binding="{Binding Status}" Value="运行中"><Setter Property="Foreground" Value="{DynamicResource AccentBrush}"/></DataTrigger>
+    <DataTrigger Binding="{Binding Status}" Value="已完成"><Setter Property="Foreground" Value="{DynamicResource AccentBrush}"/></DataTrigger>
+    <DataTrigger Binding="{Binding Status}" Value="失败"><Setter Property="Foreground" Value="{DynamicResource DangerBrush}"/></DataTrigger>
+    <DataTrigger Binding="{Binding Status}" Value="端口占用"><Setter Property="Foreground" Value="{DynamicResource WarnBrush}"/></DataTrigger>
+   </Style.Triggers>
+  </Style>
+  <Style x:Key="ProjectIconBox" TargetType="Border">
+   <Setter Property="Width" Value="34"/><Setter Property="Height" Value="34"/><Setter Property="CornerRadius" Value="7"/><Setter Property="Background" Value="{DynamicResource BlueSoftBrush}"/><Setter Property="TextElement.Foreground" Value="{DynamicResource BlueBrush}"/>
+   <Style.Triggers>
+    <DataTrigger Binding="{Binding Tone}" Value="green"><Setter Property="Background" Value="{DynamicResource AccentSoftBrush}"/><Setter Property="TextElement.Foreground" Value="{DynamicResource AccentBrush}"/></DataTrigger>
+    <DataTrigger Binding="{Binding Tone}" Value="amber"><Setter Property="Background" Value="{DynamicResource WarnSoftBrush}"/><Setter Property="TextElement.Foreground" Value="{DynamicResource WarnBrush}"/></DataTrigger>
+   </Style.Triggers>
+  </Style>
+  <DataTemplate x:Key="ProjectCard">
+   <Border x:Name="CardSurface" Height="252" Margin="0,0,10,10" BorderBrush="{DynamicResource LineBrush}" BorderThickness="1" Background="{DynamicResource SurfaceBrush}" CornerRadius="7" Padding="14" MouseLeftButtonUp="SelectProject" KeyDown="ProjectKeyDown" Focusable="True" AutomationProperties.Name="{Binding Name}">
+    <Grid>
+     <Grid.RowDefinitions><RowDefinition Height="34"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+     <Grid>
+      <Grid.ColumnDefinitions><ColumnDefinition Width="34"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+      <Border Style="{StaticResource ProjectIconBox}"><local:LucideIcon Kind="{Binding Glyph}" Width="18" Height="18"/></Border>
+      <TextBlock x:Name="CardName" Grid.Column="1" Text="{Binding Name}" FontSize="13" FontWeight="SemiBold" Margin="10,0,8,0" VerticalAlignment="Center" TextWrapping="Wrap" MaxHeight="36" ToolTip="{Binding Name}"/>
+      <CheckBox Grid.Column="2" IsChecked="{Binding Selected, Mode=TwoWay}" Checked="ProjectSelectionChanged" Unchecked="ProjectSelectionChanged" VerticalAlignment="Center" ToolTip="加入或移出监控对比" AutomationProperties.Name="{Binding Name, StringFormat=选择 {0}}"/>
+     </Grid>
+     <Grid Grid.Row="1" Margin="0,10,0,0">
+      <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+      <TextBlock Text="{Binding PortLabel}" FontFamily="Cascadia Code, Consolas" FontSize="11" Foreground="{DynamicResource BlueBrush}" Margin="0,0,10,0"/>
+      <TextBlock Grid.Column="1" Text="{Binding Uptime}" Style="{StaticResource Muted}" ToolTip="{Binding Uptime}"/>
+      <Border Grid.Column="2" Style="{StaticResource ProjectBadge}" Margin="5,0,0,0"><TextBlock Text="{Binding Status}" Style="{StaticResource ProjectBadgeText}"/></Border>
+     </Grid>
+     <StackPanel Grid.Row="2" Margin="0,7,0,7" VerticalAlignment="Top">
+      <TextBlock x:Name="CardNotes" Text="{Binding Notes}" FontSize="12" TextWrapping="Wrap" TextTrimming="CharacterEllipsis" LineHeight="17" Height="34" ToolTip="{Binding Notes}" Margin="0,0,7,7"/>
+      <TextBlock x:Name="CardCommand" Text="{Binding Command}" Style="{StaticResource Mono}" TextWrapping="Wrap" TextTrimming="CharacterEllipsis" MaxHeight="28" ToolTip="{Binding Command}"/>
+      <TextBlock Text="{Binding Directory}" Style="{StaticResource Mono}" TextTrimming="CharacterEllipsis" Margin="0,5,0,0" ToolTip="{Binding Directory}"/>
+     </StackPanel>
+     <Border Grid.Row="3" BorderBrush="{DynamicResource LineBrush}" BorderThickness="0,1,0,0" Padding="0,10,0,0">
+      <Grid>
+       <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+       <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+        <StackPanel Margin="0,0,12,0"><TextBlock Text="CPU" Style="{StaticResource Muted}" FontSize="9"/><TextBlock Text="{Binding CpuLabel}" FontSize="11" Margin="0,2,0,0"/></StackPanel>
+        <StackPanel><TextBlock Text="内存" Style="{StaticResource Muted}" FontSize="9"/><TextBlock Text="{Binding MemoryLabel}" FontSize="11" Margin="0,2,0,0"/></StackPanel>
+       </StackPanel>
+       <StackPanel Grid.Column="1" Orientation="Horizontal">
+        <Button Width="70" Margin="0,0,6,0" Click="ToggleProject" ToolTip="{Binding ToggleLabel}" AutomationProperties.Name="{Binding ToggleLabel}"><StackPanel Orientation="Horizontal"><local:LucideIcon Kind="{Binding ToggleGlyph}" Width="14" Height="14" Margin="0,0,6,0"/><TextBlock Text="{Binding ToggleLabel}"/></StackPanel></Button>
+        <Button Style="{StaticResource IconButton}" Click="ProjectLogs" ToolTip="查看日志" AutomationProperties.Name="查看日志"><local:LucideIcon Kind="file-text" Width="15" Height="15"/></Button>
+        <Button Style="{StaticResource IconButton}" Click="ProjectMenu" ToolTip="更多操作" AutomationProperties.Name="更多操作"><local:LucideIcon Kind="chevron-down" Width="15" Height="15"/></Button>
+       </StackPanel>
+      </Grid>
+     </Border>
+    </Grid>
+   </Border>
+   <DataTemplate.Triggers><Trigger SourceName="CardSurface" Property="IsMouseOver" Value="True"><Setter TargetName="CardSurface" Property="BorderBrush" Value="{DynamicResource StrongLineBrush}"/></Trigger><DataTrigger Binding="{Binding Selected}" Value="True"><Setter TargetName="CardSurface" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/><Setter TargetName="CardSurface" Property="Background" Value="{DynamicResource AccentSoftBrush}"/></DataTrigger></DataTemplate.Triggers>
+  </DataTemplate>
+  <DataTemplate x:Key="ProjectRow">
+   <Border x:Name="RowSurface" Height="148" Margin="0,0,5,8" BorderBrush="{DynamicResource LineBrush}" BorderThickness="1" Background="{DynamicResource SurfaceBrush}" CornerRadius="7" Padding="16,12" MouseLeftButtonUp="SelectProject" KeyDown="ProjectKeyDown" Focusable="True" AutomationProperties.Name="{Binding Name}">
+    <Grid>
+     <Grid.ColumnDefinitions><ColumnDefinition Width="34"/><ColumnDefinition Width="14"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+     <StackPanel><Border Style="{StaticResource ProjectIconBox}" VerticalAlignment="Top" Margin="0,3,0,8"><local:LucideIcon Kind="{Binding Glyph}" Width="18" Height="18"/></Border><CheckBox HorizontalAlignment="Center" IsChecked="{Binding Selected, Mode=TwoWay}" Checked="ProjectSelectionChanged" Unchecked="ProjectSelectionChanged" ToolTip="加入或移出监控对比" AutomationProperties.Name="{Binding Name, StringFormat=选择 {0}}"/></StackPanel>
+     <StackPanel Grid.Column="2" VerticalAlignment="Center" Margin="0,0,16,0">
+      <DockPanel LastChildFill="True">
+       <Border DockPanel.Dock="Right" Style="{StaticResource ProjectBadge}" Margin="10,0,0,0" HorizontalAlignment="Left"><TextBlock Text="{Binding Status}" Style="{StaticResource ProjectBadgeText}"/></Border>
+       <TextBlock Text="{Binding Name}" FontSize="13" FontWeight="SemiBold" ToolTip="{Binding Name}"/>
+      </DockPanel>
+      <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+       <TextBlock Text="{Binding PortLabel}" FontFamily="Cascadia Code, Consolas" FontSize="11" Foreground="{DynamicResource BlueBrush}" Margin="0,0,8,0"/>
+       <TextBlock Text="{Binding Uptime}" Style="{StaticResource Muted}"/><TextBlock Text=" · 本机服务" Style="{StaticResource Muted}" Margin="5,0,0,0"/>
+      </StackPanel>
+      <TextBlock Text="{Binding Notes}" FontSize="12" Margin="0,4,0,0" ToolTip="{Binding Notes}"/>
+      <TextBlock x:Name="ProjectCommand" Text="{Binding Command}" Style="{StaticResource Mono}" Margin="0,4,0,0" MaxHeight="38" ToolTip="{Binding Command}"/>
+      <TextBlock Text="{Binding Directory}" Style="{StaticResource Mono}" Margin="0,2,0,0" ToolTip="{Binding Directory}"/>
+     </StackPanel>
+     <Grid Grid.Column="3" Width="100" Margin="0,0,20,0" VerticalAlignment="Center" Visibility="{Binding ShowResources, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource Visible}}">
+      <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
+      <StackPanel><TextBlock Text="CPU" Style="{StaticResource Muted}" FontSize="10"/><TextBlock Text="{Binding CpuLabel}" FontSize="12" Margin="0,4,0,0"/></StackPanel>
+      <StackPanel Grid.Column="1"><TextBlock Text="内存" Style="{StaticResource Muted}" FontSize="10"/><TextBlock Text="{Binding MemoryLabel}" FontSize="12" Margin="0,4,0,0"/></StackPanel>
+     </Grid>
+     <StackPanel Grid.Column="4" Orientation="Horizontal" VerticalAlignment="Center">
+      <Button Width="70" Margin="0,0,6,0" Click="ToggleProject" ToolTip="{Binding ToggleLabel}"><StackPanel Orientation="Horizontal"><local:LucideIcon Kind="{Binding ToggleGlyph}" Width="14" Height="14" Margin="0,0,6,0"/><TextBlock Text="{Binding ToggleLabel}"/></StackPanel></Button>
+      <Button Style="{StaticResource IconButton}" Click="ProjectLogs" ToolTip="查看日志" AutomationProperties.Name="查看日志"><local:LucideIcon Kind="file-text" Width="15" Height="15"/></Button>
+      <Button Style="{StaticResource IconButton}" Click="ProjectMenu" ToolTip="更多操作" AutomationProperties.Name="更多操作"><local:LucideIcon Kind="chevron-down" Width="15" Height="15"/></Button>
+     </StackPanel>
+    </Grid>
+   </Border>
+   <DataTemplate.Triggers><Trigger SourceName="RowSurface" Property="IsMouseOver" Value="True"><Setter TargetName="RowSurface" Property="BorderBrush" Value="{DynamicResource StrongLineBrush}"/></Trigger><DataTrigger Binding="{Binding Selected}" Value="True"><Setter TargetName="RowSurface" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/><Setter TargetName="RowSurface" Property="Background" Value="{DynamicResource AccentSoftBrush}"/></DataTrigger></DataTemplate.Triggers>
+  </DataTemplate>
+  <DataTemplate x:Key="ServiceRow">
+   <Grid Margin="12,10" Height="51">
+    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="88"/><ColumnDefinition Width="66"/><ColumnDefinition Width="68"/><ColumnDefinition Width="32"/></Grid.ColumnDefinitions>
+    <Grid Margin="0,0,16,0"><Grid.ColumnDefinitions><ColumnDefinition Width="34"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+     <Border Style="{StaticResource ProjectIconBox}" Width="30" Height="30"><local:LucideIcon Kind="{Binding Glyph}" Width="17" Height="17"/></Border>
+     <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="10,0,0,0"><TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="12"/><TextBlock Text="{Binding ServiceCaption}" Style="{StaticResource Muted}" FontSize="10" Margin="0,5,0,0"/></StackPanel>
+    </Grid>
+    <StackPanel Grid.Column="1" VerticalAlignment="Center"><TextBlock Text="{Binding PortLabel}" FontSize="11" FontFamily="Cascadia Code, Consolas" Foreground="{DynamicResource BlueBrush}"/><TextBlock Text="{Binding PidLabel}" Style="{StaticResource Mono}" FontSize="9" Margin="0,5,0,0"/></StackPanel>
+    <StackPanel Grid.Column="2" VerticalAlignment="Center"><TextBlock Text="{Binding CpuLabel}" FontSize="11"/><Border Height="3" Width="46" Background="{DynamicResource LineBrush}" HorizontalAlignment="Left" Margin="0,5,0,0"><Border Width="{Binding CpuBar}" HorizontalAlignment="Left" Background="{DynamicResource AccentBrush}"/></Border></StackPanel>
+    <StackPanel Grid.Column="3" VerticalAlignment="Center"><TextBlock Text="{Binding MemoryLabel}" FontSize="11"/><Border Height="3" Width="46" Background="{DynamicResource LineBrush}" HorizontalAlignment="Left" Margin="0,5,0,0"><Border Width="{Binding MemoryBar}" HorizontalAlignment="Left" Background="{DynamicResource BlueBrush}"/></Border></StackPanel>
+    <Button Grid.Column="4" Style="{StaticResource IconButton}" ToolTip="查看完整信息" Click="ProjectInfo" AutomationProperties.Name="查看完整信息"><local:LucideIcon Kind="arrow-up-right" Width="15" Height="15"/></Button>
+   </Grid>
+  </DataTemplate>
+  <Style x:Key="ServiceItem" TargetType="ListBoxItem">
+   <Setter Property="HorizontalContentAlignment" Value="Stretch"/><Setter Property="Padding" Value="0"/><Setter Property="Foreground" Value="{DynamicResource TextBrush}"/><Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ListBoxItem"><Border x:Name="Root" BorderBrush="{DynamicResource LineBrush}" BorderThickness="0,0,0,1" Background="Transparent"><ContentPresenter/></Border><ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Root" Property="Background" Value="{DynamicResource HoverBrush}"/></Trigger><Trigger Property="IsSelected" Value="True"><Setter TargetName="Root" Property="Background" Value="{DynamicResource AccentSoftBrush}"/><Setter TargetName="Root" Property="BorderThickness" Value="2,0,0,0"/><Setter TargetName="Root" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter>
+  </Style>
+ </Window.Resources>
+ <Grid x:Name="Root" Background="{DynamicResource CanvasBrush}" SizeChanged="RootSizeChanged">
+  <Grid.RowDefinitions><RowDefinition Height="38"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+  <Border Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource LineBrush}" BorderThickness="0,0,0,1">
+   <Grid Margin="18,0,5,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+     <Image Source="Assets/local-ops.png" Width="20" Height="20" Margin="0,0,10,0"/>
+     <TextBlock Text="LOCAL OPS" Foreground="{DynamicResource AccentBrush}" FontSize="11" FontWeight="Bold" VerticalAlignment="Center"/>
+     <Border Width="1" Height="15" Background="{DynamicResource LineBrush}" Margin="12,0"/>
+     <TextBlock Text="本地运维台" Style="{StaticResource Muted}" VerticalAlignment="Center"/>
+     <Border Background="{DynamicResource RailBrush}" CornerRadius="3" Padding="6,1" Margin="10,0,0,0"><TextBlock Text="WPF 样稿" Style="{StaticResource Muted}" FontSize="10"/></Border>
+    </StackPanel>
+    <StackPanel Grid.Column="1" Orientation="Horizontal" shell:WindowChrome.IsHitTestVisibleInChrome="True" VerticalAlignment="Center">
+     <Ellipse Width="5" Height="5" Fill="{DynamicResource AccentBrush}" Margin="0,0,6,0"/><TextBlock Text="演示数据" Style="{StaticResource Muted}" VerticalAlignment="Center" Margin="0,0,17,0"/>
+     <Button x:Name="ThemeButton" Style="{StaticResource IconButton}" Click="ToggleTheme" ToolTip="切换深浅主题" AutomationProperties.Name="切换主题"><local:LucideIcon x:Name="ThemeIcon" Kind="moon" Width="15" Height="15"/></Button>
+     <Border Width="1" Height="14" Background="{DynamicResource LineBrush}" Margin="10,0"/>
+     <Button Style="{StaticResource IconButton}" Width="38" Click="Minimize" ToolTip="最小化" AutomationProperties.Name="最小化"><TextBlock Text="&#xE921;" FontFamily="Segoe MDL2 Assets" FontSize="10"/></Button>
+     <Button Style="{StaticResource IconButton}" Width="38" Click="Maximize" ToolTip="最大化或还原" AutomationProperties.Name="最大化或还原"><TextBlock Text="&#xE922;" FontFamily="Segoe MDL2 Assets" FontSize="10"/></Button>
+     <Button Style="{StaticResource IconButton}" Width="38" Click="ClosePreview" ToolTip="退出样稿" AutomationProperties.Name="关闭"><local:LucideIcon Kind="x" Width="15" Height="15"/></Button>
+    </StackPanel>
+   </Grid>
+  </Border>
+  <Grid Grid.Row="1"><Grid.ColumnDefinitions><ColumnDefinition Width="76"/><ColumnDefinition/></Grid.ColumnDefinitions>
+   <Border Background="{DynamicResource RailBrush}" BorderBrush="{DynamicResource LineBrush}" BorderThickness="0,0,1,0">
+    <Grid Margin="7,20,7,12"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+     <StackPanel x:Name="Navigation">
+      <RadioButton x:Name="LaunchNav" Style="{StaticResource Nav}" GroupName="Nav" Tag="launch" Click="Navigate" IsChecked="True" AutomationProperties.Name="启动台"><StackPanel><local:LucideIcon Kind="rocket" Width="19" Height="19" Margin="0,0,0,5"/><TextBlock Text="启动台" HorizontalAlignment="Center"/></StackPanel></RadioButton>
+      <RadioButton x:Name="MonitorNav" Style="{StaticResource Nav}" GroupName="Nav" Tag="monitor" Click="Navigate" AutomationProperties.Name="服务监控"><StackPanel><local:LucideIcon Kind="activity" Width="19" Height="19" Margin="0,0,0,5"/><TextBlock Text="服务监控" HorizontalAlignment="Center"/></StackPanel></RadioButton>
+      <RadioButton x:Name="LogsNav" Style="{StaticResource Nav}" GroupName="Nav" Tag="logs" Click="Navigate" AutomationProperties.Name="日志中心"><StackPanel><local:LucideIcon Kind="file-text" Width="19" Height="19" Margin="0,0,0,5"/><TextBlock Text="日志中心" HorizontalAlignment="Center"/></StackPanel></RadioButton>
+     </StackPanel>
+     <StackPanel Grid.Row="2"><RadioButton x:Name="SettingsNav" Style="{StaticResource Nav}" GroupName="Nav" Tag="settings" Click="Navigate" AutomationProperties.Name="设置"><StackPanel><local:LucideIcon Kind="settings" Width="19" Height="19" Margin="0,0,0,5"/><TextBlock Text="设置" HorizontalAlignment="Center"/></StackPanel></RadioButton><TextBlock Text="PREVIEW" Style="{StaticResource Muted}" FontSize="8" HorizontalAlignment="Center" Margin="0,6,0,0"/></StackPanel>
+    </Grid>
+   </Border>
+   <Grid Grid.Column="1" Margin="28,24,28,0">
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition/><RowDefinition Height="30"/></Grid.RowDefinitions>
+    <Grid Margin="0,0,0,29"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+     <StackPanel><TextBlock x:Name="Breadcrumb" Text="本机工作区   /   启动台" Style="{StaticResource Muted}" FontSize="10"/><TextBlock x:Name="PageTitle" Text="启动台" FontSize="25" FontWeight="SemiBold" Margin="0,3,0,0"/></StackPanel>
+     <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Bottom" Margin="0,0,0,6"><Ellipse Width="6" Height="6" Fill="{DynamicResource AccentBrush}" Margin="0,0,7,0"/><TextBlock Text="工作区已就绪" Style="{StaticResource Muted}"/></StackPanel>
+    </Grid>
+    <ContentControl x:Name="PageContent" Grid.Row="1" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch"/>
+    <Grid Grid.Row="2" VerticalAlignment="Center"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock x:Name="FooterText" Style="{StaticResource Muted}" FontSize="10"/><TextBlock Grid.Column="1" Text="Local Ops Windows  ·  界面预览" Style="{StaticResource Muted}" FontSize="10"/></Grid>
+   </Grid>
+  </Grid>
+  <Grid x:Name="Overlay" Grid.RowSpan="2" Background="#70101B23" Visibility="Collapsed" MouseDown="OverlayMouseDown">
+   <Border x:Name="DialogSurface" Width="520" MaxHeight="620" HorizontalAlignment="Center" VerticalAlignment="Center" Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource StrongLineBrush}" BorderThickness="1" CornerRadius="8" Padding="23">
+    <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+     <DockPanel Margin="0,0,0,17"><Button DockPanel.Dock="Right" Style="{StaticResource IconButton}" Click="CloseDialog" ToolTip="关闭" AutomationProperties.Name="关闭对话框"><local:LucideIcon Kind="x" Width="16" Height="16"/></Button><TextBlock x:Name="DialogTitle" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center"/></DockPanel>
+     <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto"><StackPanel x:Name="DialogBody"/></ScrollViewer>
+     <StackPanel x:Name="DialogActions" Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,20,0,0"/>
+    </Grid>
+   </Border>
+  </Grid>
+ </Grid>
+</Window>

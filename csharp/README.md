@@ -1,6 +1,6 @@
 # C# Windows 客户端
 
-此目录是 2.1.1 的 .NET 10 WPF 客户端，不使用 WebView 渲染。
+此目录是 2.1.0 的 .NET 10 WPF 客户端，不使用 WebView 渲染。
 当前构建器已将客户端、标准库后台和锚点接入版本目录安装器；应用内 GitHub 更新支持安装包及兼容主题资源。发布进度以 `FEATURE_PARITY.md` 与 GitHub Release 为准。
 常规进程所有权校验和项目启停继续通过现有 Python 后端执行。手动处理端口冲突使用 C# 直接调用 Win32，不开放后台强停接口。
 
@@ -18,9 +18,9 @@ dotnet run --project csharp/LocalOpsWindows.Client/LocalOpsWindows.Client.csproj
 正式连接方式和演示方式使用不同的单实例标识。
 `--demo` 开发预览不执行安装，也不会覆盖现有安装目录。
 
-连接失败或后台退出后会自动重新探测 `9600–9609` 与备用段 `11000–11009` 并恢复连接；使用轻量健康响应识别后台 PID，兼容旧后台的慢状态扫描。
+连接失败或后台退出后会自动重新探测 `9600–9609` 并恢复连接；使用轻量健康响应识别后台 PID，兼容旧后台的慢状态扫描。
 断线时标记当前数据为上次同步结果，启动、停止等写操作不会自动重放。
-本机回环连接不经过系统代理；新启动的后台将输出保存在 `%LOCALAPPDATA%\LocalOpsWindows\logs\console.log`。
+本机回环连接不经过系统代理；安装版后台日志位于 `<安装目录>\logs\console.log`，配置与客户端偏好位于 `data`，资源缓存、更新下载与运行临时文件位于 `cache`。安装向导可选择目录，后续更新沿用该目录。
 仅关闭客户端自己启动且 PID 校验通过的后台；连接已有后台时，退出客户端不会结束它。
 前台每 5 秒刷新；隐藏到通知区域或最小化时暂停界面轮询，恢复后立即同步。项目进程监督仍由后台负责。
 
@@ -38,6 +38,9 @@ dotnet run --project csharp/LocalOpsWindows.Client/LocalOpsWindows.Client.csproj
 
 ## 当前界面
 
+- 启动台沿用 H5 的窄导航、概览和分组卡片网格，长期服务在前、批处理任务在后；名称、状态、端口、命令、目录和底部操作保持固定层级。
+- 卡片随窗口宽度自动换列，低于 1250 DIP 收起右侧辅助栏；每张卡片底部左侧为固定宽度主操作，右侧为打开、日志与更多。
+- 深色模式使用中性灰不透明表面与明亮文字；公共按钮采用细边框、上缘高光、短阴影和按下位移，编辑器取消/保存在右下对齐，危险操作单独放左侧。
 - 自绘标题栏与系统窗口圆角统一；保留拖动、缩放、最小化、最大化、还原和退出入口。
 - 搜索栏撑满可用宽度；下拉菜单使用不透明底色、选中标记和明确的键盘焦点。
 - 界面使用 Microsoft YaHei UI，缺失时回退到 Microsoft YaHei；正文 14 DIP、辅助文字 12 DIP，图标单独使用图标字体。
@@ -49,6 +52,16 @@ dotnet run --project csharp/LocalOpsWindows.Client/LocalOpsWindows.Client.csproj
 - 无真实用户数据的演示截图与实际项目操作分开验收。
 
 ## 验证
+
+不操作桌面的后台检查：
+
+```powershell
+dotnet run --project csharp/LocalOpsWindows.Client.Tests/LocalOpsWindows.Client.Tests.csproj -c Release -- --no-desktop
+```
+
+其中离屏 WPF 检查使用虚构数据，不调用窗口 `Show`、不创建原生窗口、不连接产品后台；在仓库根目录运行时，预览图输出到 `tmp/ui-h5/`。可单独传入 `--offscreen-ui` 运行布局检查。覆盖深浅主题、960x700/1080x720/1440x900/1920x1080 DIP、卡片按钮几何对齐、选择保留、中文筛选、滚动条、按钮状态及编辑器/命令面板/诊断窗口。默认配色正常文字组合最低对比度为深色 4.93:1、浅色 4.55:1；用户资源包覆盖颜色后不保证该数值。离屏渲染不等同于实际显示器、输入法、窗口标题栏或安装版验收。
+
+以下默认命令还包括需要显示窗口的桌面检查，电脑使用中不要运行：
 
 ```powershell
 dotnet run --project csharp/LocalOpsWindows.Client.Tests/LocalOpsWindows.Client.Tests.csproj -c Release

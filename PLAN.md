@@ -1,6 +1,6 @@
 # 本地运维台 Windows 执行与发布计划
 
-> 当前状态：2.1.0 已接入 C# / WPF、版本目录安装器和 GitHub 更新器。发行以当前测试、安装包验证和远端 CI 为准；剩余验收见 `csharp/FEATURE_PARITY.md`。下文的历史实现记录保留用于追溯。
+> 当前状态：2.1.0 已接入 C# / WPF、版本目录安装和 GitHub 更新器；Inno Setup 标准向导已编译并通过独立测试身份的真实安装、后台生命周期、重装与卸载验证，正式身份的用户向导验收仍待完成。发行以当前测试、安装包验证和远端 CI 为准；剩余验收见 `csharp/FEATURE_PARITY.md`。下文的历史实现记录保留用于追溯。
 
 ## 1. 目标与边界
 
@@ -31,7 +31,7 @@
 
 - 将项目放入独立子目录 `local-ops-windows/`，原 `local-ops/` 不修改。
 - 产品、页面、启动器、数据目录和发行包改名为 Local Ops Windows。
-- 数据目录改为 `%APPDATA%\LocalOpsWindows`，日志改为 `%LOCALAPPDATA%\LocalOpsWindows\logs`。
+- 2.1.0 安装向导允许选择目录，配置和偏好进入该目录的 `data`，日志进入 `logs`，更新与运行临时文件进入 `cache`；公开安装包不迁移历史数据，新空目录首次启动项目为空，同目录更新保留数据。
 - 使用 `GetExtendedTcpTable` 读取 TCP 监听端口，不依赖管理员权限和本地化命令输出。
 - 使用 Toolhelp、`NtQueryInformationProcess`、`GetProcessTimes`、`GetProcessMemoryInfo` 和 `GlobalMemoryStatusEx` 构建 Windows 进程快照。
 - 使用 `msvcrt.locking` 实现 Windows 单实例写锁。
@@ -116,5 +116,5 @@ GitHub 插件负责仓库读取、分支提交、远端核对和草稿 PR 创建
 2. 使用 WPF 单实例、托盘、窗口记忆、命令面板与任务通知；隐藏时暂停界面轮询。
 3. 自包含打包 .NET、Python 后台、锚点和对应许可，不要求安装 Python、.NET SDK 或 WebView2。
 4. GitHub 更新资产只来自个人 Fork，下载后校验摘要；资源格式禁止脚本、DLL 和 XAML。
-5. 运行 C# 测试及 `tools/verify_installer.py`，验证内嵌 payload、解压代码隐私、隔离安装、真实快捷方式和注册表、冻结后台生命周期、卸载保留数据，再核对原生窗口实际显示与操作。
+5. 运行 C# 测试，构建独立测试身份的 Inno 安装包，再用 `tools/verify_native_installer.py` 验证载荷摘要、解压代码隐私、隔离安装、测试快捷方式和注册表、冻结后台生命周期、卸载保留数据；独立 Windows 环境验收最终正式包及原生窗口实际操作。
 6. 使用不含私人邮箱历史的发布提交更新个人 Fork；CI 通过后创建版本标签，发布并回读下载资产校验摘要。

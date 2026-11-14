@@ -11,13 +11,13 @@ internal sealed class CommandPalette : Window
     internal CommandPalette(IEnumerable<PaletteCommand> commands)
     {
         Title = "命令面板";
+        Style = (Style)FindResource("AppWindow");
         Width = 620;
         Height = Math.Min(500, SystemParameters.WorkArea.Height - 40);
         MinWidth = 480;
         MinHeight = 300;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         ShowInTaskbar = false;
-        SetResourceReference(ForegroundProperty, "TextBrush");
         SetResourceReference(BackgroundProperty, "PopupBrush");
         var root = new DockPanel { Margin = new Thickness(18) };
         var search = new TextBox { Style = (Style)FindResource("TextInput"), Tag = "搜索项目或操作", Margin = new Thickness(0,0,0,12) };

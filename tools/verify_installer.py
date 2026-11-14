@@ -78,31 +78,13 @@ def wait_for(check, timeout=30):
 
 def verify_backend(payload: Path, root: Path, migrated_app: dict | None = None, *,
                    expect_empty: bool = False) -> None:
-    port = None
-    candidates = list(range(9600, 9610)) + list(range(11000, 11010))
-    for candidate in candidates:
-        with socket.socket() as probe:
-            try:
-                probe.bind(("127.0.0.1", candidate))
-                port = candidate
-                break
-            except OSError:
-                pass
-    if port is None:
-        raise RuntimeError("No free backend test port; existing services were left untouched")
-    temporary = root / "cache/temp"
-    temporary.mkdir(parents=True, exist_ok=True)
-    environment = dict(
-        os.environ,
-        PATH=str(Path(os.environ["SystemRoot"]) / "System32"),
-        CONSOLE_DATA_DIR=str(root / "data"),
-        CONSOLE_LOG_DIR=str(root / "logs"),
-        TEMP=str(temporary),
-        TMP=str(temporary),
-    )
+    port = 0
+    environment = dict(os.environ, PATH=str(Path(os.environ["SystemRoot"]) / "System32"))
+    environment.pop("CONSOLE_DATA_DIR", None)
+    environment.pop("CONSOLE_LOG_DIR", None)
     backend = payload / "backend/LocalOpsWindowsBackend.exe"
     process = subprocess.Popen(
-        [str(backend), "--background", "--no-browser", "--preferred-port", str(port)],
+        [str(backend), "--background", "--no-browser"],
         env=environment, cwd=backend.parent, creationflags=subprocess.CREATE_NO_WINDOW)
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
@@ -117,21 +99,24 @@ def verify_backend(payload: Path, root: Path, migrated_app: dict | None = None, 
         nonlocal port
         if process.poll() is not None:
             raise RuntimeError(f"Packaged backend exited: {process.returncode}")
-        for candidate in candidates:
-            port = candidate
-            try:
-                value = request("/api/health")
-                if value.get("consolePid") == process.pid:
-                    return value
-            except (OSError, urllib.error.URLError, json.JSONDecodeError):
-                continue
-        return None
+        try:
+            endpoint = json.loads((root / "data/backend-endpoint.json").read_text(encoding="utf-8"))
+            if endpoint.get("consolePid") != process.pid:
+                return None
+            port = int(endpoint["port"])
+            assert 1024 <= port <= 65535
+            value = request("/api/health")
+            if value.get("consolePid") != process.pid:
+                raise RuntimeError("Test port belongs to another process")
+            return value
+        except (OSError, urllib.error.URLError, json.JSONDecodeError):
+            return None
 
     try:
         initial_health = wait_for(health)
         assert initial_health["platform"] == "windows"
-        assert (root / "data/config.json").is_file()
-        assert (root / "logs/console.log").is_file()
+        assert Path(initial_health["dataDirectory"]).resolve() == root / "data"
+        assert Path(initial_health["logsDirectory"]).resolve() == root / "logs"
         state = request("/api/state")
         assert state["consolePid"] == process.pid
         if expect_empty:
@@ -143,15 +128,8 @@ def verify_backend(payload: Path, root: Path, migrated_app: dict | None = None, 
         fixture_ids = {item["id"] for item in state["apps"]}
         # Only OS commands are on PATH; the frozen anchor must run without Python.
         for code, status in ((0, "succeeded"), (130, "canceled"), (7, "failed")):
-            temp_marker = root / f"task-temp-{code}.txt"
-            powershell = Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
-            marker_command = (
-                f'"{powershell}" -NoProfile -NonInteractive -Command '
-                f'"[IO.File]::WriteAllText({installer._ps_quote(temp_marker.name)},'
-                '$env:TEMP,[Text.UTF8Encoding]::new($false))"'
-            )
             app = request("/api/apps", {"name": "Release fixture", "kind": "task",
-                                       "command": f"{marker_command} & exit /b {code}",
+                                       "command": f"cmd.exe /d /c \"chcp 65001 >nul & echo %TEMP% & exit {code}\"",
                                        "cwd": str(root), "port": None})
             fixture_ids.add(app["id"])
             request(f"/api/apps/{app['id']}/start", {})
@@ -162,8 +140,7 @@ def verify_backend(payload: Path, root: Path, migrated_app: dict | None = None, 
             assert outcome["code"] == code and outcome["status"] == status, outcome
             log = request(f"/api/apps/{app['id']}/logs")["text"]
             assert log, "Frozen task did not produce lifecycle logs"
-            actual_temp = temp_marker.read_text(encoding="utf-8").strip()
-            assert actual_temp.casefold() == str(temporary).casefold(), actual_temp
+            assert str(root / "cache/temp") in log, f"Anchor temp directory mismatch: {log!r}"
         assert request("/api/console/restart", {})["pid"] == process.pid
         assert process.wait(timeout=20) == 0
 

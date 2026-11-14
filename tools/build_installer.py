@@ -13,6 +13,8 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tempfile
+from zipfile import ZipFile
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUTPUT = ROOT / "dist"
@@ -74,6 +76,28 @@ def sha256(path: Path) -> str:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def merge_runtime(source: Path, destination: Path) -> None:
+    """Share onedir libraries, refusing incompatible runtime collisions."""
+    for path in source.rglob("*"):
+        if not path.is_file():
+            continue
+        target = destination / path.relative_to(source)
+        if target.exists():
+            identical = sha256(path) == sha256(target)
+            if not identical and path.name == "base_library.zip":
+                # PyInstaller varies ZIP entry ordering between independent analyses.
+                with ZipFile(path) as left, ZipFile(target) as right:
+                    names = left.namelist()
+                    identical = (len(names) == len(set(names)) == len(right.namelist())
+                                 and set(names) == set(right.namelist())
+                                 and all(left.read(name) == right.read(name) for name in names))
+            if not identical:
+                raise RuntimeError(f"Conflicting shared runtime file: {path.name}")
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, target)
 
 
 def copy_runtime_licenses(payload: Path, work: Path) -> None:
@@ -142,10 +166,11 @@ def build(output_dir: Path, compiler: Path | None = None,
     if test_identity is not None and not re.fullmatch(r"[0-9a-f]{32}", test_identity):
         raise ValueError("Installer test identity must be a 32-character lowercase hexadecimal ID")
     output_dir.mkdir(parents=True, exist_ok=True)
-    work = ROOT / "build" / "csharp-installer"
+    build_root = ROOT / "build"
+    build_root.mkdir(parents=True, exist_ok=True)
+    work = Path(tempfile.mkdtemp(prefix="csharp-installer-", dir=build_root))
     if not work.resolve().is_relative_to((ROOT / "build").resolve()):
         raise SystemExit("构建目录越界")
-    shutil.rmtree(work, ignore_errors=True)
     temp_dist = work / "dist"
     temp_dist.mkdir(parents=True, exist_ok=True)
 
@@ -154,7 +179,7 @@ def build(output_dir: Path, compiler: Path | None = None,
          str(ROOT / "csharp/LocalOpsWindows.Client/LocalOpsWindows.Client.csproj"),
          "-c", "Release", "-r", "win-x64", "--self-contained", "true",
          "-o", str(payload), "--artifacts-path", str(work / "dotnet"), f"-p:Version={version()}",
-         "-p:DebugType=None", "-p:DebugSymbols=false",
+         "-p:DebugType=None", "-p:DebugSymbols=false", "-p:SatelliteResourceLanguages=zh-Hans",
          f"-p:PathMap={ROOT}=/_/src", "-p:ContinuousIntegrationBuild=true"])
     backend = build_binary(
         ROOT / "server.py", "LocalOpsWindowsBackend", work, temp_dist,
@@ -164,8 +189,8 @@ def build(output_dir: Path, compiler: Path | None = None,
     shutil.copytree(backend.parent, payload / "backend")
     anchor = build_binary(
         ROOT / "tools" / "win_anchor.py", "LocalOpsWindowsAnchor", work,
-        temp_dist, console=True)
-    shutil.copy2(anchor, payload / "backend" / anchor.name)
+        temp_dist, console=True, onefile=False)
+    merge_runtime(anchor.parent, payload / "backend")
     for name in ("LICENSE", "NOTICE.md", "THIRD_PARTY_NOTICES.md"):
         shutil.copy2(ROOT / name, payload / name)
     shutil.copytree(ROOT / "licenses", payload / "licenses", dirs_exist_ok=True)
@@ -217,6 +242,8 @@ def build(output_dir: Path, compiler: Path | None = None,
     build_record.write_text(json.dumps({
         "format": "inno", "testId": test_identity,
         "sha256": sha256(output_dir / setup.name), "versionDirectory": version_directory,
+        "payloadBytes": sum(path.stat().st_size for path in payload.rglob("*") if path.is_file()),
+        "setupBytes": setup.stat().st_size, "buildDirectory": work.name,
     }, indent=2) + "\n", encoding="utf-8")
     resource = output_dir / "LocalOpsWindows.Resources.json"
     shutil.copy2(ROOT / "csharp/LocalOpsWindows.Client/resources.json", resource)

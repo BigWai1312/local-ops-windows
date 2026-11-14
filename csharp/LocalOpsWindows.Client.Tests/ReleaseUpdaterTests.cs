@@ -14,21 +14,21 @@ internal static class ReleaseUpdaterTests
         Directory.CreateDirectory(directory);
         try
         {
-            var version = new Version(2, 1, 1);
+            var version = new Version(2, 1, 4);
             var installer = Encoding.UTF8.GetBytes("MZ-fixture-installer");
             var resources = Encoding.UTF8.GetBytes("""
-                {"schemaVersion":1,"revision":2,"minClientVersion":"2.1.1","maxClientVersion":"2.1.1",
+                {"schemaVersion":1,"revision":2,"minClientVersion":"2.1.4","maxClientVersion":"2.1.4",
                  "light":{"AccentBrush":"#123456"},"dark":{"AccentBrush":"#ABCDEF"}}
                 """);
             string Digest(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
-            var tag = "v2.1.1-resources.2";
+            var tag = "v2.1.4-resources.2";
             var root = $"https://github.com/{ReleaseUpdater.Repository}/releases/download/{tag}/";
             var manifest = JsonSerializer.Serialize(new
             {
-                schemaVersion = 1, product = "LocalOpsWindows.CSharp", clientVersion = "2.1.1",
+                schemaVersion = 1, product = "LocalOpsWindows.CSharp", clientVersion = "2.1.4",
                 installer = new { asset = ReleaseUpdater.InstallerName, sha256 = Digest(installer) },
                 resources = new { asset = ReleaseUpdater.ResourceName, sha256 = Digest(resources),
-                    revision = 2, minClientVersion = "2.1.1", maxClientVersion = "2.1.1" },
+                    revision = 2, minClientVersion = "2.1.4", maxClientVersion = "2.1.4" },
             });
             var release = JsonSerializer.Serialize(new
             {
@@ -80,7 +80,7 @@ internal static class ReleaseUpdaterTests
                 Encoding.UTF8.GetString(originalResources).Replace("AccentBrush", "Command"),
                 Encoding.UTF8.GetString(originalResources).Replace("#123456", "https://example.invalid"),
                 Encoding.UTF8.GetString(originalResources).Replace("\"revision\":2", "\"revision\":2,\"revision\":3"),
-                Encoding.UTF8.GetString(originalResources).Replace("2.1.1", "3.0.0"),
+                Encoding.UTF8.GetString(originalResources).Replace("2.1.4", "3.0.0"),
             })
                 await Reject(() => Task.FromResult(ClientResources.Parse(Encoding.UTF8.GetBytes(value), version)));
             using var absent = new ReleaseUpdater(new CallbackHandler(_ => new(HttpStatusCode.NotFound)));

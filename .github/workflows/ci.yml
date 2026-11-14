@@ -91,7 +91,7 @@ jobs:
     needs: windows-check
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     permissions:
       contents: write
     env:
@@ -111,11 +111,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install build toolchain
-        run: |
-          python -m pip install --disable-pip-version-check -r requirements-build.txt
-          if ($LASTEXITCODE -ne 0) { throw 'Python build toolchain install failed' }
-          choco install innosetup --yes --no-progress --limit-output
-          if ($LASTEXITCODE -ne 0) { throw 'Inno Setup install failed' }
+        run: python -m pip install --disable-pip-version-check -r requirements-build.txt
 
       - name: Set up .NET
         uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
@@ -130,20 +126,35 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Release project checks failed' }
           python -m unittest discover -s tests -p "test_*.py" -v
 
-      - name: Build source archive and installer
+      - name: Find existing Inno Setup compiler
+        run: |
+          python -c "from tools.build_installer import find_inno_compiler; print(find_inno_compiler())"
+          if ($LASTEXITCODE -ne 0) {
+            choco install innosetup --yes --no-progress --limit-output
+            if ($LASTEXITCODE -ne 0) { throw 'Inno Setup install failed' }
+          }
+
+      - name: Build and verify isolated standard installer
         shell: pwsh
+        run: |
+          $testId = [guid]::NewGuid().ToString('N')
+          python tools/build_installer.py --output tmp/inno-test --test-identity $testId
+          if ($LASTEXITCODE -ne 0) { throw 'Test installer build failed' }
+          $build = Get-Content tmp/inno-test/LocalOpsWindows.SetupBuild.json -Raw | ConvertFrom-Json
+          python tools/verify_native_installer.py --setup tmp/inno-test/LocalOpsWindows-Setup.exe --test-identity $testId --payload "build/$($build.buildDirectory)/payload"
+          if ($LASTEXITCODE -ne 0) { throw 'Standard installer verification failed' }
+
+      - name: Build source archive and production installer
         run: |
           python tools/build_release.py --dist dist
           if ($LASTEXITCODE -ne 0) { throw 'Release source build failed' }
-          $testId = [guid]::NewGuid().ToString('N')
-          python tools/build_installer.py --output tmp/release-smoke --test-identity $testId
-          if ($LASTEXITCODE -ne 0) { throw 'Isolated installer build failed' }
-          python tools/verify_native_installer.py --payload build/csharp-installer/payload --setup tmp/release-smoke/LocalOpsWindows-Setup.exe --test-identity $testId
-          if ($LASTEXITCODE -ne 0) { throw 'Isolated installer verification failed' }
           python tools/build_installer.py --output dist
           if ($LASTEXITCODE -ne 0) { throw 'Production installer build failed' }
-          python -c "from pathlib import Path; from tools.verify_installer import verify_archive_privacy; verify_archive_privacy(Path('build/csharp-installer/payload'), Path('build/csharp-installer/dist/LocalOpsWindows.Maintenance.exe'), embedded_payload=False)"
-          if ($LASTEXITCODE -ne 0) { throw 'Production payload privacy scan failed' }
+
+      - name: Verify production payload privacy
+        run: |
+          $build = Get-Content dist/LocalOpsWindows.SetupBuild.json -Raw | ConvertFrom-Json
+          python -c "from pathlib import Path; from tools.verify_installer import verify_archive_privacy; work = Path('build') / '$($build.buildDirectory)'; verify_archive_privacy(work / 'payload', work / 'dist/LocalOpsWindows.Maintenance.exe', embedded_payload=False)"
 
       - name: Publish verified GitHub Release
         shell: pwsh

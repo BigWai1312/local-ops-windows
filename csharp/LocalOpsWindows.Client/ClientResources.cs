@@ -17,7 +17,7 @@ internal static class ClientResources
         "AccentSoftBrush", "WarningBrush", "WarningSoftBrush", "DangerBrush", "DangerSoftBrush",
         "InfoBrush", "InfoSoftBrush", "InsetBrush", "InputBrush",
     ];
-    internal static string CachePath => Path.Combine(ClientStorage.Root, "cache", "client", "resources.json");
+    internal static string CachePath => Path.Combine(ClientStorage.Cache, "resources.json");
 
     internal static ResourcePack Parse(byte[] bytes, Version current)
     {

@@ -82,6 +82,8 @@ EXCLUDED_PARTS = {
     "bin",
     "obj",
     "data",
+    "logs",
+    "cache",
     "dist",
     "htmlcov",
     "node_modules",

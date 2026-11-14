@@ -28,8 +28,8 @@
 
 以下内容不得提交到 GitHub、发行包或公开问题：
 
-- `%APPDATA%\LocalOpsWindows\config.json{,.bak}`；
-- `%LOCALAPPDATA%\LocalOpsWindows\logs\`；
+- `<安装目录>\data\` 中的配置、偏好、图标和备份，以及历史 AppData 数据；
+- `<安装目录>\logs\` 和 `<安装目录>\cache\`；
 - 完整命令、真实工作目录、用户名、机器名和邮箱；
 - token、Cookie、API key、SSH key、`.env` 和账号凭据；
 - 未脱敏的截图、崩溃转储和调试日志。

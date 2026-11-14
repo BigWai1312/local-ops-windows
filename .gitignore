@@ -24,6 +24,8 @@ htmlcov/
 
 # Runtime state: contains local commands, paths, tokens, icons and logs
 data/
+/logs/
+/cache/
 
 # Generated scratch and release artifacts
 tmp/

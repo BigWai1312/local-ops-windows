@@ -1,5 +1,5 @@
 # 本地运维台 Windows
-`Local Ops Windows` 是一个面向 Windows 10/11 x64 的本地服务监控与任务启动台。2.1.1 安装版使用 C# / WPF 原生窗口，随包提供 .NET 与 Python 后台，不依赖 WebView2。
+`Local Ops Windows` 是一个面向 Windows 10/11 x64 的本地服务监控与任务启动台。2.1.0 安装版使用 C# / WPF 原生窗口，随包提供 .NET 与 Python 后台，不依赖 WebView2。
 
 > 当前版本处于 Preview / Alpha。它可以执行用户保存的本地命令，不应暴露到公网、反向代理、端口映射或不受信任的用户环境。
 
@@ -42,17 +42,25 @@
 
 ## 安装版
 
-从个人仓库的 GitHub Release 下载 `LocalOpsWindows-Setup.exe`，双击后可选择安装目录，默认位置为：
+安装器使用 Inno Setup 标准向导。候选安装包的本机验证记录见 `csharp/FEATURE_PARITY.md`，正式下载以完成发行验收后的 GitHub Release 为准。
+
+`LocalOpsWindows-Setup.exe` 双击先打开安装向导，依次显示欢迎、许可协议、安装位置、附加选项、准备安装、安装进度和完成页面。可输入或浏览选择安装目录（支持中文和空格），点击“安装”后才开始写入。首次安装建议路径为：
 
 ```text
 %LOCALAPPDATA%\Programs\LocalOpsWindows
 ```
 
-安装向导会创建开始菜单快捷方式，可自行勾选桌面快捷方式和登录启动，默认不启用这两项。它不要求管理员权限，也不会修改 Docker 项目、系统服务或已有端口。卸载可从 Windows“应用和功能”进入，或运行安装目录中的 `unins000.exe`。
+可以改为 `D:\Apps\LocalOpsWindows` 等当前用户可写的独立目录；不接受磁盘根目录、系统目录根、目录链接或其他软件的非空目录。更新默认沿用已安装位置，不会恢复到 C 盘。
 
-安装完成后，双击开始菜单或桌面快捷方式会打开客户端；开机自启使用隐藏窗口与通知区域模式。安装器先校验全部文件，再写入独立的 `versions/<版本>-<摘要>/` 目录，通过 `current.json` 和快捷方式切换版本。同目录覆盖升级会保留 `data`、`logs` 和 `cache`；升级时沿用已选目录，切换目录需先卸载。卸载不会删除用户数据与日志。
+安装器会创建开始菜单快捷方式；“创建桌面快捷方式”和“登录 Windows 后启动”由用户选择，首次安装默认不勾选。它不要求管理员权限，也不会修改 Docker 项目、系统服务或已有端口。完成页面可选择是否启动客户端。卸载可从 Windows“已安装的应用”进入，或运行安装目录中的 `unins000.exe`。
+
+公开安装包面向首次安装：没有旧版数据迁移选项，不会复制历史 AppData 或其他安装目录的配置、偏好和日志。安装到空目录后，首次启动的项目列表为空。现有客户端可手动添加项目和导出清单，尚无手动导入入口。标准安装版更新沿用已有目录和该目录中的数据；需要换盘时先卸载再安装，数据原件仍保留。卸载只删除已登记的程序文件和缓存，保留 `data`、`logs` 及其他用户文件。
+
+安装完成后，双击快捷方式会打开客户端；开机自启使用隐藏窗口与通知区域模式。Inno Setup 管理程序文件、快捷方式、注册项和卸载记录，程序放在独立的 `versions/<版本>-<摘要>/` 目录。维护程序校验载荷后写入 `current.json`，失败则返回错误并禁止安装结束后启动。新版向导的安装失败恢复、旧版升级和卸载仍需真实 EXE 验证，不沿用旧自制安装器的回滚结论。
 
 当前公开安装包未做商业代码签名，Windows SmartScreen 可能显示“未知发布者”。Release 同时提供 `.sha256` 文件；安装前可用 `Get-FileHash` 核对，但这不能替代正式代码签名。
+
+在“设置 → 启动与窗口 → 点击关闭按钮时”选择“最小化到托盘”或“退出程序”，选择保存在安装目录的偏好文件中。默认关闭到托盘，右上角 × 和 Alt+F4 使用同一设置，后台继续运行；双击托盘图标可恢复窗口。选择退出程序或从托盘菜单退出时，会退出客户端并停止由它启动的管理后台；不会批量停止已托管项目。托盘不可用时正常退出，避免隐藏后无法找回窗口。
 
 ## 启动
 
@@ -79,7 +87,7 @@ dotnet run --project csharp/LocalOpsWindows.Client -- --demo
 py -3 server.py --no-browser --preferred-port 9603
 ```
 
-桌面客户端优先使用 `127.0.0.1:9600-9609`，若该端口段被 Windows 保留或占用则回退到 `11000-11009`，连接或启动标准库后台并通过 HTTP API 读取数据。`static/` 网页版保留作为兼容及开发入口；`desktop.py` 是历史 WebView2 宿主，不进入 C# 安装版。
+桌面客户端优先使用 `127.0.0.1:9600-9609`；此范围被 Windows 保留或全部不可用时，后台选择空闲端口，将实际端口写入数据目录的 `backend-endpoint.json`，客户端核验健康响应、数据目录与进程身份后连接。`static/` 网页版保留作为兼容及开发入口；`desktop.py` 是历史 WebView2 宿主，不进入 C# 安装版。
 
 安装版支持 `LocalOpsWindows.Client.exe --background`，供开机自启使用；普通启动不加该参数会打开桌面客户端窗口。
 
@@ -89,10 +97,13 @@ py -3 server.py --no-browser --preferred-port 9603
 
 | 内容 | 路径 |
 | --- | --- |
-| 配置和图标 | `%APPDATA%\LocalOpsWindows\` |
-| 日志 | `%LOCALAPPDATA%\LocalOpsWindows\logs\` |
+| 配置、图标、客户端偏好 | `<安装目录>\data\` |
+| 日志 | `<安装目录>\logs\` |
+| 资源缓存、更新下载、运行临时文件 | `<安装目录>\cache\` |
 
-可用环境变量覆盖：
+这些目录不随版本目录切换而改变。源码后台默认使用项目目录下的 `data`、`logs` 和 `cache`；独立 C# 调试构建的偏好和缓存位于其输出目录。安装器首次启动的自解压临时目录仍由 Windows 的 `%TEMP%` 决定，正常退出后清理；选定目录后的日常后台和应用内更新临时文件使用安装目录的 `cache\temp`。Windows 快捷方式与卸载/自启注册项仍位于标准系统位置，不存储项目缓存。
+
+源码后台可用环境变量覆盖（安装客户端固定使用其所选安装目录）：
 
 ```powershell
 $env:CONSOLE_DATA_DIR = 'D:\LocalOpsData'
@@ -133,16 +144,26 @@ python -m unittest tests.test_windows -v
 python tools/check_privacy.py
 ```
 
-构建发行包：
+构建发行包需要已安装的 Inno Setup 6.4+ 或 7 编译器（当前使用 7.1.1）。构建器按环境变量 `INNO_SETUP_COMPILER`、PATH、常规安装路径和编译器安装登记查找，也可使用 `--iscc` 明确指定现有 `ISCC.exe`；缺失时停止，不生成旧式安装器。
+
+后台隔离验证使用独立产品身份，不安装正式产品、不创建真实桌面或开始菜单快捷方式，也不启动客户端窗口：
+
+```powershell
+python -m pip install -r requirements-build.txt
+$testId = [guid]::NewGuid().ToString('N')
+python tools/build_installer.py --output tmp/inno-test --test-identity $testId
+python tools/verify_native_installer.py --setup tmp/inno-test/LocalOpsWindows-Setup.exe --test-identity $testId --payload build/csharp-installer/payload
+```
+
+隔离验证通过后再构建正式发行文件：
 
 ```powershell
 python tools/build_release.py --dist dist
-python -m pip install -r requirements-build.txt
 python tools/build_installer.py --output dist
-python tools/verify_installer.py --payload build/csharp-installer/payload --setup dist/LocalOpsWindows-Setup.exe
+python -c "from pathlib import Path; from tools.verify_installer import verify_archive_privacy; verify_archive_privacy(Path('build/csharp-installer/payload'), Path('build/csharp-installer/dist/LocalOpsWindows.Maintenance.exe'), embedded_payload=False)"
 ```
 
-如需验证旧 WebView 单文件安装包升级，在 Python 3.12 下给最后一条命令追加 `--legacy-setup path/to/trusted-old-setup.exe`。此选项执行可信旧包内的安装代码和程序，在独立临时目录、专用 HKCU 测试键及临时快捷方式中检查升级与失败回滚，不替换当前用户的正式安装。它不覆盖旧版客户端窗口交互或登录自启的实际桌面验收。
+`tools/verify_installer.py` 的命令行保留用于历史 PyInstaller 安装包验证，不能用来执行 Inno Setup 安装包。标准向导验证使用上述 `verify_native_installer.py`；它检查真实测试安装包、中文和空格目录、首次启动项目为空且不读取模拟旧配置、可选自启、载荷摘要与代码隐私、冻结后台任务、重装和卸载。正式身份安装包不在用户当前系统自动运行，其最终二进制安装验收仍需独立 Windows 测试环境。
 
 GitHub Actions 在每次推送或 PR 时运行检查；匹配 `VERSION` 的 `v<version>` 标签通过检查后才创建 Release，已存在的发行资产不会覆盖。应用内更新只信任仓库 `BigWai1312/local-ops-windows` 的 HTTPS Release 资产，并校验更新清单中的 SHA-256。
 

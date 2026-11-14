@@ -73,8 +73,7 @@ public partial class MainWindow
         if (!_loaded || _demoMode) return;
         try
         {
-            using var key = Registry.CurrentUser.CreateSubKey(SettingsKey);
-            key?.SetValue("TaskNotifications", TaskNotifyCheck.IsChecked == true ? "true" : "false");
+            ClientStorage.Write("TaskNotifications", TaskNotifyCheck.IsChecked == true ? "true" : "false");
             _notificationTimer.Stop();
             if (TaskNotifyCheck.IsChecked == true && !IsMonitoringVisible && !_backendStopped)
                 _notificationTimer.Start();
@@ -168,8 +167,7 @@ public partial class MainWindow
         {
             var bounds = RestoreBounds;
             if (bounds.IsEmpty) return;
-            using var key = Registry.CurrentUser.CreateSubKey(SettingsKey);
-            key?.SetValue("WindowBounds", JsonSerializer.Serialize(new[]
+            ClientStorage.Write("WindowBounds", JsonSerializer.Serialize(new[]
             {
                 bounds.X, bounds.Y, bounds.Width, bounds.Height, WindowState == WindowState.Maximized ? 1.0 : 0.0,
             }));

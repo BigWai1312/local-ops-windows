@@ -32,6 +32,8 @@ internal static class UiLayoutTests
     {
         var app = new App();
         app.InitializeComponent();
+        Require(System.Windows.Media.RenderOptions.ProcessRenderMode == RenderMode.SoftwareOnly,
+            "application uses the GPU-independent rendering path");
         // No product startup, native window, tray, backend or desktop interaction.
         app.Startup -= (StartupEventHandler)Delegate.CreateDelegate(typeof(StartupEventHandler), app,
             typeof(App).GetMethod("OnStartup", Private | BindingFlags.DeclaredOnly)!);
@@ -44,6 +46,8 @@ internal static class UiLayoutTests
         foreach (var theme in new[] { "dark", "light" })
         {
             Invoke(window, "ApplyTheme", theme);
+            Require(window.Background is SolidColorBrush { Color.A: 255 },
+                "window has an opaque background in both themes");
             CheckContrast(window, theme);
             CheckButtonStates(window);
             Require(((TextBlock)window.FindName("BackendStatusText")).Foreground.ToString()
@@ -71,7 +75,7 @@ internal static class UiLayoutTests
                 {
                     var footer = (Grid)button.Parent;
                     var actions = Descendants<Button>(footer).ToList();
-                    Require(actions.Count == 4 && actions.All(b => Math.Abs(b.ActualHeight - 36) < 1),
+                    Require(actions.Count == 4 && actions.All(b => Math.Abs(b.ActualHeight - 32) < 1),
                         "card actions have uniform height");
                     var rects = actions.Select(b => Bounds(b, root)).ToList();
                     Require(rects.All(r => Math.Abs(r.Top - rects[0].Top) < 1)
@@ -82,14 +86,20 @@ internal static class UiLayoutTests
                 var firstTwo = cards.Take(2).Select(b => Bounds(b, root)).ToList();
                 Require(Math.Abs(firstTwo[0].Top - firstTwo[1].Top) < 1,
                     $"{theme}/{width}: cards wrap into multiple columns");
-                Require(((FrameworkElement)window.FindName("LaunchDetailPanel")).Visibility
-                    == (width < 1250 ? Visibility.Collapsed : Visibility.Visible), "auxiliary area responds to width");
+                var monitor = (FrameworkElement)window.FindName("LaunchDetailPanel");
+                Require(monitor.Visibility == Visibility.Visible && Grid.GetRow(monitor) == (width < 1250 ? 0 : 1),
+                    "monitor stays visible as a compact strip on smaller windows");
             }
             CheckSelectionAndFilter(window, root, list);
             ((Button)window.FindName("ServicesNav")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             Layout(root, 1440, 1000);
             Require(((ListView)window.FindName("ServicesGrid")).Items.Count > 0, "monitor remains a populated list");
+            Require(Math.Abs(((ComboBox)window.FindName("ServiceGroupFilter")).ActualHeight - 36) < 1,
+                "service filter keeps its control height beside the tabs and summary");
             Render(root, Path.Combine(evidence, $"services-{theme}.png"));
+            ((Button)window.FindName("LogsNav")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Layout(root, 960, 700);
+            Render(root, Path.Combine(evidence, $"logs-{theme}.png"));
             ((Button)window.FindName("SettingsNav")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             Layout(root, 1080, 900);
             var disabled = (Button)window.FindName("ApplyUpdateButton");
@@ -101,8 +111,53 @@ internal static class UiLayoutTests
             CheckOtherDialogs(window, theme, evidence);
             ((Button)window.FindName("LaunchpadNav")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         }
+        CheckCloseBehavior(window, root);
         Require(new WindowInteropHelper(window).Handle == IntPtr.Zero, "no native desktop window created");
+        var hiddenWindow = new MainWindow(["--demo"]);
+        try
+        {
+            var hiddenHandle = new WindowInteropHelper(hiddenWindow).EnsureHandle();
+            var source = HwndSource.FromHwnd(hiddenHandle);
+            Require(!hiddenWindow.IsVisible && source?.CompositionTarget?.BackgroundColor.A == 255,
+                "native initialization keeps a hidden window opaque without showing it");
+        }
+        finally { hiddenWindow.Close(); }
         Console.WriteLine($"Offscreen WPF layout/contrast passed. Evidence: {evidence}");
+    }
+
+    private static void CheckCloseBehavior(MainWindow window, FrameworkElement root)
+    {
+        var choices = (ComboBox)window.FindName("CloseBehaviorCombo");
+        Require((choices.SelectedItem as ComboBoxItem)?.Tag?.ToString() == "tray", "close defaults to tray");
+        var trayField = typeof(MainWindow).GetField("_tray", Private)!;
+        var quittingField = typeof(MainWindow).GetField("_quitting", Private)!;
+        var lifetime = (CancellationTokenSource)typeof(MainWindow).GetField("_lifetime", Private)!.GetValue(window)!;
+        var closing = new System.ComponentModel.CancelEventArgs();
+        Invoke(window, "OnClosing", window, closing);
+        Require(!closing.Cancel, "missing tray cannot leave an unreachable hidden client");
+        // A NotifyIcon without an Icon never adds a notification-area entry.
+        using var tray = new System.Windows.Forms.NotifyIcon { Visible = true };
+        trayField.SetValue(window, tray);
+        try
+        {
+            closing = new();
+            Invoke(window, "OnClosing", window, closing);
+            Require(closing.Cancel && !lifetime.IsCancellationRequested, "tray close keeps the client lifetime active");
+            var closeButton = Descendants<Button>(root).Single(b => AutomationProperties.GetName(b) == "关闭窗口");
+            closeButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Require(!(bool)quittingField.GetValue(window)! && !lifetime.IsCancellationRequested,
+                "caption close follows the preference instead of forcing exit");
+            choices.SelectedItem = choices.Items.OfType<ComboBoxItem>().Single(item => (string)item.Tag == "exit");
+            closing = new();
+            Invoke(window, "OnClosing", window, closing);
+            Require(!closing.Cancel, "exit preference permits normal shutdown");
+            choices.SelectedItem = choices.Items.OfType<ComboBoxItem>().Single(item => (string)item.Tag == "tray");
+            quittingField.SetValue(window, true);
+            closing = new();
+            Invoke(window, "OnClosing", window, closing);
+            Require(!closing.Cancel, "explicit tray exit and installer updates bypass close-to-tray");
+        }
+        finally { quittingField.SetValue(window, false); trayField.SetValue(window, null); }
     }
 
     private static void CheckSelectionAndFilter(MainWindow window, FrameworkElement root, ListView list)
@@ -114,7 +169,7 @@ internal static class UiLayoutTests
             "polling preserves selection across grouped rebuilds");
         Layout(root, 1440, 1000);
         var item = (ListViewItem)list.ItemContainerGenerator.ContainerFromItem(selected);
-        var card = Descendants<Border>(item).First(b => b.Height == 244);
+        var card = Descendants<Border>(item).First(b => b.Height == 252);
         Require(card.BorderBrush.ToString() == window.FindResource("AccentBrush").ToString(),
             "selected card has a visible accent outline");
         var scroll = Descendants<ScrollViewer>(list).First();

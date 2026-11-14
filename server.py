@@ -3,7 +3,7 @@
 """本地运维台 Windows 后端（仅 Python 3 标准库）。
 
 本地服务监控 + 快速启动台：
-    py -3 server.py  →  绑定 127.0.0.1，端口 9600 起（被占 +1，最多 10 个）
+    py -3 server.py  →  绑定 127.0.0.1，优先 9600-9609，不可用时选择空闲端口
 API 契约与实现要点见 AGENTS.md。
 """
 
@@ -174,17 +174,22 @@ FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = os.path.abspath(getattr(sys, "_MEIPASS", os.path.dirname(__file__)))
 INSTALL_DIR = os.path.dirname(os.path.abspath(sys.executable)) if FROZEN else RESOURCE_DIR
 # Frozen builds read bundled assets from PyInstaller's resource directory;
-# mutable configuration and logs remain under the user's AppData directories.
+# mutable configuration and logs stay beside the selected installation.
 BASE_DIR = RESOURCE_DIR
 PRODUCT_NAME = "本地运维台 Windows"
 PRODUCT_ID = "LocalOpsWindows"
 VERSION_PATH = os.path.join(RESOURCE_DIR, "VERSION")
 LEGACY_DATA_DIR = os.path.join(BASE_DIR, "data")
 if IS_WIN:
-    _appdata = os.environ.get("APPDATA") or os.path.expanduser("~")
-    _localappdata = os.environ.get("LOCALAPPDATA") or _appdata
-    DEFAULT_DATA_DIR = os.path.join(_appdata, PRODUCT_ID)
-    DEFAULT_LOGS_DIR = os.path.join(_localappdata, PRODUCT_ID, "logs")
+    storage_root = INSTALL_DIR
+    if FROZEN and os.path.basename(INSTALL_DIR) == "backend":
+        version_dir = os.path.dirname(INSTALL_DIR)
+        versions_dir = os.path.dirname(version_dir)
+        candidate = os.path.dirname(versions_dir)
+        if os.path.basename(versions_dir) == "versions" and os.path.isfile(os.path.join(candidate, "installation.json")):
+            storage_root = candidate
+    DEFAULT_DATA_DIR = os.path.join(storage_root, "data")
+    DEFAULT_LOGS_DIR = os.path.join(storage_root, "logs")
 else:
     DEFAULT_DATA_DIR = os.path.expanduser(
         "~/Library/Application Support/总控台")
@@ -244,7 +249,6 @@ APP_VERSION, VERSION_LOAD_ERROR = read_project_version()
 HOST = "127.0.0.1"
 PORT_START = 9600
 PORT_TRIES = 10
-PORT_FALLBACK_START = 11000
 SUBPROCESS_TIMEOUT = 5          # lsof/ps 等子进程超时（秒）
 MAX_ICON_BYTES = 5 * 1024 * 1024
 MAX_JSON_BYTES = 1 * 1024 * 1024
@@ -456,6 +460,13 @@ def prepare_runtime_storage():
     migration = migrate_legacy_runtime_data()
     for private_dir in (DATA_DIR, ICONS_DIR, LOGS_DIR):
         _ensure_private_dir(private_dir)
+    if IS_WIN:
+        temporary = os.path.join(
+            os.path.dirname(DATA_DIR) if DATA_DIR_OVERRIDDEN else storage_root,
+            "cache", "temp")
+        _ensure_private_dir(temporary)
+        os.environ["TEMP"] = os.environ["TMP"] = temporary
+        tempfile.tempdir = temporary
     for path in (CONFIG_PATH, CONFIG_PATH + ".bak", INSTANCE_LOCK_PATH):
         try:
             if stat.S_ISREG(os.lstat(path).st_mode):
@@ -539,7 +550,7 @@ class Config:
     DEFAULT = {"schemaVersion": CURRENT_SCHEMA_VERSION,
                "apps": [], "hidden": [], "pinned": [], "promoted": [],
                "watchedKeywords": [], "uiTheme": DEFAULT_UI_THEME}
-    APP_DEFAULT = {"id": None, "name": "", "command": "", "cwd": None,
+    APP_DEFAULT = {"id": None, "name": "", "command": "", "cwd": None, "notes": "",
                    "port": None, "emoji": None, "glyph": None, "icon": None,
                    "favicon": None, "kind": "service", "lastPid": None,
                    "lastPgid": None, "runToken": None,
@@ -2040,7 +2051,7 @@ def build_apps(cfg, listeners, groups=None):
             health = {"status": "unknown", "blocking": False, "issues": []}
         apps.append({
             "id": app["id"], "name": app["name"], "command": app["command"],
-            "cwd": app.get("cwd"), "port": port,
+            "cwd": app.get("cwd"), "port": port, "notes": app.get("notes", ""),
             "emoji": app.get("emoji"), "glyph": app.get("glyph"), "icon": app.get("icon"),
             "favicon": app.get("favicon"),
             "running": bool(live), "pid": pid,
@@ -2192,6 +2203,8 @@ def build_health(cfg):
         "productName": PRODUCT_NAME,
         "consolePid": SELF_PID,
         "version": APP_VERSION,
+        "dataDirectory": DATA_DIR,
+        "logsDirectory": LOGS_DIR,
         "schemaVersion": snapshot.get(
             "schemaVersion", CURRENT_SCHEMA_VERSION),
         "degraded": degraded,
@@ -3362,7 +3375,20 @@ def _tail_file_lines(path, count, block_size=65536):
                 chunks.append(chunk)
                 newlines += chunk.count(b"\n")
         data = b"".join(reversed(chunks))
-        return data.decode("utf-8", errors="replace").splitlines()[-count:]
+        # Lifecycle headers are UTF-8; Windows command output can use the OEM
+        # code page. Decode per line so a legacy command cannot corrupt headers.
+        lines = []
+        for line in data.split(b"\n"):
+            try:
+                text = line.decode("utf-8")
+            except UnicodeDecodeError:
+                text = line.decode("oem" if IS_WIN else "utf-8", errors="replace")
+            lines.extend(text.splitlines())
+            if not text:
+                lines.append("")
+        if data.endswith(b"\n"):
+            lines.pop()
+        return lines[-count:]
     except OSError:
         return []
 
@@ -3651,6 +3677,12 @@ def validate_app_fields(data, partial):
             fields[key] = v.strip()
         elif not partial:
             return None, "缺少字段 %s" % key
+    if "notes" in data:
+        if not isinstance(data["notes"], str) or len(data["notes"]) > 2000:
+            return None, "notes 必须是不超过 2000 字的字符串"
+        fields["notes"] = data["notes"].strip()
+    elif not partial:
+        fields["notes"] = ""
     if "cwd" in data:
         v = data["cwd"]
         if v is not None and not isinstance(v, str):
@@ -4420,7 +4452,7 @@ class Handler(BaseHTTPRequestHandler):
         while find_app(snapshot, new_id):
             new_id = secrets.token_hex(4)
         app = {"id": new_id, "name": fields["name"],
-               "command": fields["command"], "cwd": fields["cwd"],
+               "command": fields["command"], "cwd": fields["cwd"], "notes": fields["notes"],
                "port": fields["port"], "emoji": fields["emoji"],
                "glyph": fields["glyph"], "kind": fields["kind"],
                "icon": None, "favicon": None, "lastPid": None,
@@ -5075,20 +5107,23 @@ def create_console_server(preferred_port=None):
     cfg = Config(CONFIG_PATH)
 
     server, port = None, None
-    candidates = (list(range(PORT_START, PORT_START + PORT_TRIES))
-                  + list(range(PORT_FALLBACK_START, PORT_FALLBACK_START + PORT_TRIES)))
-    if isinstance(preferred_port, int) and preferred_port in candidates:
-        candidates.remove(preferred_port)
+    candidates = list(range(PORT_START, PORT_START + PORT_TRIES))
+    if isinstance(preferred_port, int) and 1024 <= preferred_port <= 65535:
+        if preferred_port in candidates:
+            candidates.remove(preferred_port)
         candidates.insert(0, preferred_port)
+    # Windows may reserve the entire legacy range; let the OS select a free port.
+    candidates.append(0)
     for p in candidates:
         try:
             server = ConsoleServer((HOST, p), Handler, cfg, p)
-            port = p
+            port = server.server_address[1]
             break
         except OSError:
             continue
     if server is None:
-        print("错误：管理端口均不可用，无法启动。")
+        print("错误：端口 %d-%d 均被占用，无法启动。" %
+              (PORT_START, PORT_START + PORT_TRIES - 1))
         sys.exit(1)
     return server, port
 
@@ -5107,6 +5142,12 @@ def start_console_server(preferred_port=None, log_to_file=False):
         return None
     try:
         console, port = create_console_server(preferred_port)
+        try:
+            Config._write_atomic(os.path.join(DATA_DIR, "backend-endpoint.json"),
+                                 json.dumps({"port": port, "consolePid": SELF_PID}))
+        except Exception:
+            console.server_close()
+            raise
     except Exception:
         release_instance_lock(instance_lock)
         raise

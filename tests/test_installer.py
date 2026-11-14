@@ -310,6 +310,41 @@ class InstallerTests(unittest.TestCase):
 
 
 class NativeBuildTests(unittest.TestCase):
+    def test_shared_runtime_deduplicates_and_rejects_conflicts(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source, target = Path(folder) / "source", Path(folder) / "target"
+            source.mkdir()
+            target.mkdir()
+            (source / "python.dll").write_bytes(b"runtime")
+            (target / "python.dll").write_bytes(b"runtime")
+            (source / "anchor.exe").write_bytes(b"anchor")
+            build_installer.merge_runtime(source, target)
+            self.assertEqual((target / "anchor.exe").read_bytes(), b"anchor")
+            (source / "python.dll").write_bytes(b"different")
+            with self.assertRaisesRegex(RuntimeError, "Conflicting"):
+                build_installer.merge_runtime(source, target)
+
+    def test_shared_base_library_ignores_zip_order_but_checks_module_bytes(self):
+        from zipfile import ZipFile
+        with tempfile.TemporaryDirectory() as folder:
+            source, target = Path(folder) / "source", Path(folder) / "target"
+            source.mkdir()
+            target.mkdir()
+            with ZipFile(source / "base_library.zip", "w") as archive:
+                archive.writestr("a.pyc", b"a")
+                archive.writestr("b.pyc", b"b")
+            with ZipFile(target / "base_library.zip", "w") as archive:
+                archive.writestr("b.pyc", b"b")
+                archive.writestr("a.pyc", b"a")
+            before = (target / "base_library.zip").read_bytes()
+            build_installer.merge_runtime(source, target)
+            self.assertEqual((target / "base_library.zip").read_bytes(), before)
+            with ZipFile(source / "base_library.zip", "w") as archive:
+                archive.writestr("a.pyc", b"different")
+                archive.writestr("b.pyc", b"b")
+            with self.assertRaisesRegex(RuntimeError, "Conflicting"):
+                build_installer.merge_runtime(source, target)
+
     def test_compiler_discovery_reads_custom_registered_location(self):
         with tempfile.TemporaryDirectory() as folder:
             executable = Path(folder) / "ISCC.exe"

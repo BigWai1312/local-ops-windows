@@ -25,13 +25,13 @@ internal sealed class DiagnosticWindow : Window
     internal DiagnosticWindow(AppSnapshot app, DiagnosticReport report)
     {
         Title = $"诊断 · {app.Name}";
+        Style = (Style)FindResource("AppWindow");
         Width = 640;
         Height = Math.Min(640, SystemParameters.WorkArea.Height - 40);
         MinWidth = 480;
         MinHeight = 400;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         ShowInTaskbar = false;
-        SetResourceReference(ForegroundProperty, "TextBrush");
         SetResourceReference(BackgroundProperty, "PopupBrush");
         var root = new DockPanel { Margin = new Thickness(24) };
         var footer = new WrapPanel { HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0,16,0,0) };

@@ -52,6 +52,14 @@ OFL 1.1 允许字体与软件一同捆绑和再分发，前提是每份副本包
 
 2.1.0 使用 .NET 10 WPF，标准库后台与锚点由 PyInstaller 冻结。构建器从实际解析的 .NET 运行时 NuGet 包复制许可证与第三方声明，并从构建用 Python、PyInstaller 分发复制许可到安装目录的 `licenses/runtime/`。版本以随包 `LocalOpsWindows.Client.runtimeconfig.json` 为准。C# 安装包不包含 pywebview、pystray 或 WebView2。
 
+标准安装向导改用 Inno Setup，维护程序仍由 PyInstaller 冻结，不再打包 Tkinter / Tcl/Tk。安装流程参考 VS Code 的公开 `build/win32/code.iss`，本项目使用自行编写的安装脚本和常用中文消息，未复制其产品标识或翻译者个人信息。
+
+- 项目：<https://jrsoftware.org/isinfo.php>
+- 当前构建器：Inno Setup 7.1.1；许可原文随构建工具的 `license.txt` 提供。
+- 源码与许可：<https://github.com/jrsoftware/issrc>
+- 许可：Inno Setup License；Copyright (C) 1997-2026 Jordan Russell，Portions Copyright (C) 2000-2026 Martijn Laan。
+- 构建使用原版编译器并保留其生成安装器中的版权声明和网站信息，不冒称安装引擎作者。升级构建器版本时需重新核对所用版本的许可。
+
 ## 历史 WebView2 桌面壳
 
 2.0.2 及历史 `desktop.py` 宿主使用以下 Python 运行时组件。保留来源与许可供历史版本追溯；它们不是 2.1.0 C# 客户端的依赖：

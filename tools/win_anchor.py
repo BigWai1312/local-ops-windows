@@ -108,6 +108,7 @@ def main():
     try:
         proc = subprocess.Popen(
             ["cmd", "/d", "/c", batch],
+            stdin=subprocess.DEVNULL, stdout=sys.stdout, stderr=sys.stderr,
             creationflags=CREATE_NO_WINDOW)
     except OSError:
         return 1

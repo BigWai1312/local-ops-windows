@@ -33,6 +33,7 @@ public partial class ProjectEditor : Window
         _glyph = app?.Glyph;
         _storedIcon = app?.Icon;
         NameInput.Text = app?.Name ?? "";
+        NotesInput.Text = app?.Notes ?? "";
         CwdInput.Text = app?.Cwd ?? "";
         CommandInput.Text = app?.Command ?? "";
         PortInput.Text = app?.Port?.ToString() ?? "";
@@ -234,7 +235,7 @@ public partial class ProjectEditor : Window
         }
         var payload = new
         {
-            name = NameInput.Text.Trim(), command = CommandInput.Text.Trim(),
+            name = NameInput.Text.Trim(), command = CommandInput.Text.Trim(), notes = NotesInput.Text.Trim(),
             cwd = string.IsNullOrWhiteSpace(CwdInput.Text) ? null : CwdInput.Text.Trim(),
             port, kind = TaskMode.IsChecked == true ? "task" : "service", glyph = _glyph,
         };

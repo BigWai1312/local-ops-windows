@@ -72,6 +72,10 @@
             <StackPanel x:Name="FormPanel" Margin="24,18">
                 <TextBlock Text="名称" FontWeight="SemiBold"/>
                 <TextBox x:Name="NameInput" Style="{StaticResource TextInput}" AutomationProperties.Name="项目名称" Margin="0,6,0,14"/>
+                <TextBlock Text="备注" FontWeight="SemiBold"/>
+                <TextBox x:Name="NotesInput" Style="{StaticResource TextInput}" AutomationProperties.Name="项目备注"
+                         AcceptsReturn="True" TextWrapping="Wrap" MinHeight="58" MaxHeight="100" MaxLength="2000"
+                         VerticalScrollBarVisibility="Auto" Margin="0,6,0,14"/>
                 <TextBlock Text="工作目录" FontWeight="SemiBold"/>
                 <DockPanel Margin="0,6,0,0">
                     <Button DockPanel.Dock="Right" Style="{StaticResource ToolbarButton}" Click="DetectProject">

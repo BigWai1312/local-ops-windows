@@ -1,27 +1,26 @@
 using System.Net;
+using System.IO;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 using System.Reflection;
 using System.Diagnostics;
-using System.IO;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Data;
 using System.Net.Sockets;
 using LocalOpsWindows.Client;
-
-if (args.Contains("--idle-worker"))
-{
-    Console.WriteLine("ready");
-    await Task.Delay(Timeout.Infinite);
-    return;
-}
 
 if (args.Contains("--offscreen-ui"))
 {
     try { await UiLayoutTests.RunAsync(); }
     catch (Exception ex) { Console.Error.WriteLine(ex); Environment.ExitCode = 1; }
+    return;
+}
+
+if (args.Contains("--idle-worker"))
+{
+    Console.WriteLine("ready");
+    await Task.Delay(Timeout.Infinite);
     return;
 }
 
@@ -37,7 +36,9 @@ if (args.Contains("--port-worker"))
 
 var checks = new List<(string Name, Func<Task> Run)>
 {
-    ("installed data root follows the selected directory", () => { TestStorageRoot(); return Task.CompletedTask; }),
+    ("installation storage and recoverable preferences", () => { TestStorage(); return Task.CompletedTask; }),
+    ("backend discovery isolates selected installation data", TestStorageDiscovery),
+    ("backend discovery reads dynamic endpoint and rejects malformed hints", TestDynamicEndpoint),
     ("GitHub updates, download integrity and resource rollback", ReleaseUpdaterTests.RunAsync),
     ("state contract labels", () =>
     {
@@ -64,6 +65,23 @@ var checks = new List<(string Name, Func<Task> Run)>
 
 static void TestActualPorts()
 {
+    var telemetryState = new DashboardState
+    {
+        Apps = [new AppSnapshot { Id = "a", Running = true }, new AppSnapshot { Id = "b", Running = false }],
+        Services = [new ServiceSnapshot { AppId = "a", Pid = 42, Key = "one", Cpu = 5, Mem = 2 },
+            new ServiceSnapshot { AppId = "a", Pid = 42, Key = "two", Cpu = 5, Mem = 2 },
+            new ServiceSnapshot { AppId = "b", Pid = 99, Key = "other", Cpu = 9 }],
+    };
+    var services = LaunchTelemetry.Services(telemetryState, telemetryState.Apps);
+    Assert(services.Count == 1 && services.Sum(s => s.Cpu) == 5, "multiport process is counted once; stopped projects excluded");
+    var samples = new MonitorSession();
+    Assert(LaunchTelemetry.History(samples, services, false).Length == 0, "no fabricated monitoring history");
+    samples.Observe(telemetryState); samples.Observe(telemetryState);
+    Assert(LaunchTelemetry.History(samples, services, false).SequenceEqual(new double[] { 5, 5 }), "trend uses sampled telemetry");
+    var polling = "127.0.0.1 - \"GET /api/console/log?tail=300 HTTP/1.1\" 200 -";
+    var error = "127.0.0.1 - \"GET /api/state HTTP/1.1\" 500 -";
+    Assert(MainWindow.UserLog(polling + "\n" + error + "\nTask started").Trim() == error + "\nTask started",
+        "only successful known polling requests are hidden; errors and operations stay visible");
     var app = new AppSnapshot
     {
         Port = 3000, Ports = [5173, 5173, -1, 70000], Running = true, Listening = false,
@@ -85,20 +103,6 @@ static void TestActualPorts()
     Assert(app.StatusLabel == "失败" && app.ToggleLabel == "运行" && app.UptimeLabel.Contains("00:25"),
         "legacy task result has exit code and duration");
     Assert(AppSnapshot.FormatDuration(90061) == "1.01:01:01", "multi-day duration must not wrap");
-}
-
-static void TestStorageRoot()
-{
-    var root = Path.Combine(Path.GetTempPath(), "localops-storage-" + Guid.NewGuid().ToString("N"));
-    var version = Path.Combine(root, "versions", "2.1.1-fixture");
-    Directory.CreateDirectory(version);
-    try
-    {
-        File.WriteAllText(Path.Combine(root, "installation.json"), """{"product":"LocalOpsWindows"}""");
-        Assert(ClientStorage.ResolveRoot(version) == root,
-            "versioned installs keep mutable data beside the chosen installation root");
-    }
-    finally { Directory.Delete(root, recursive: true); }
 }
 
 static void TestMonitorSession()
@@ -144,6 +148,11 @@ static void TestMonitorSession()
 
 foreach (var check in checks)
 {
+    if (args.Contains("--no-desktop") && check.Run == (Func<Task>)TestInputLayout)
+    {
+        Console.WriteLine("SKIP desktop window checks (--no-desktop)");
+        continue;
+    }
     await check.Run();
     Console.WriteLine($"PASS {check.Name}");
 }
@@ -171,6 +180,76 @@ static async Task TestOffscreenUi()
     {
         if (!worker.HasExited) worker.Kill(entireProcessTree: false);
     }
+}
+
+static void TestStorage()
+{
+    var root = Path.Combine(AppContext.BaseDirectory, "storage-fixture-" + Guid.NewGuid().ToString("N"), "中文 空格");
+    var version = Path.Combine(root, "versions", "2.1.0-fixture");
+    Directory.CreateDirectory(version);
+    try
+    {
+        Assert(ClientStorage.ResolveRoot(version) == version, "standalone build uses its own directory");
+        File.WriteAllText(Path.Combine(root, "installation.json"), """{"product":"LocalOpsWindows"}""");
+        Assert(ClientStorage.ResolveRoot(version) == root, "versioned install uses selected root");
+        var settings = Path.Combine(root, "data", "client-settings.json");
+        ClientStorage.Write("Theme", "dark", settings);
+        ClientStorage.Write("CloseBehavior", "exit", settings);
+        ClientStorage.Write("MinimizeToTray", "false", settings);
+        Assert(ClientStorage.Read("Theme", settings) == "dark", "writes preserve other preferences");
+        Assert(ClientStorage.Read("CloseBehavior", settings) == "exit", "close preference persists independently of minimize behavior");
+        File.WriteAllText(settings, "{broken");
+        Assert(ClientStorage.Read("Theme", settings) == "dark", "corrupt preferences use backup");
+        ClientStorage.Write("TaskNotifications", "false", settings);
+        Assert(ClientStorage.Read("Theme", settings) == "dark", "repair preserves backup preferences");
+        Assert(ClientStorage.Read("CloseBehavior", settings) == "exit", "backup recovery preserves close preference");
+        Assert(File.ReadAllText(settings + ".corrupt") == "{broken", "corrupt original retained");
+    }
+    finally { Directory.Delete(Directory.GetParent(root)!.FullName, recursive: true); }
+}
+
+static async Task TestStorageDiscovery()
+{
+    var expected = Path.Combine(AppContext.BaseDirectory, "selected", "data");
+    await using var supervisor = new BackendSupervisor(new CallbackHandler(request =>
+        JsonResponse(JsonSerializer.Serialize(new
+        {
+            platform = "windows", productName = "本地运维台 Windows", consolePid = 1234,
+            dataDirectory = request.RequestUri!.Port == 9602 ? expected : "another-installation",
+        }))), expected);
+    Assert(await supervisor.StartAsync(CancellationToken.None) == 9602,
+        "must not reuse a backend serving another installation");
+    Assert(!supervisor.OwnsProcess, "discovering matching storage does not acquire process ownership");
+}
+
+static async Task TestDynamicEndpoint()
+{
+    var directory = Path.Combine(Path.GetTempPath(), "localops-endpoint-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    try
+    {
+        var endpoint = Path.Combine(directory, "backend-endpoint.json");
+        using var handler = new CallbackHandler(request =>
+            request.RequestUri!.Port is 54321 or 9603
+                ? JsonResponse(JsonSerializer.Serialize(new
+                {
+                    platform = "windows", productName = "本地运维台 Windows",
+                    consolePid = 1234, dataDirectory = directory,
+                }))
+                : new HttpResponseMessage(HttpStatusCode.NotFound));
+        await using var supervisor = new BackendSupervisor(handler, directory);
+        File.WriteAllText(endpoint, """{"port":54321}""");
+        Assert(await supervisor.StartAsync(CancellationToken.None) == 54321,
+            "dynamic port is checked before legacy ports");
+        foreach (var text in new[] { "{broken", "[]", """{"port":"54321"}""", """{"port":70000}""" })
+        {
+            File.WriteAllText(endpoint, text);
+            Assert(await supervisor.StartAsync(CancellationToken.None) == 9603,
+                "invalid endpoint falls back to validated legacy discovery");
+        }
+        Assert(!supervisor.OwnsProcess, "endpoint hint does not acquire ownership");
+    }
+    finally { Directory.Delete(directory, recursive: true); }
 }
 
 static void TestStateContract()
@@ -287,10 +366,10 @@ static async Task TestBackendDiscovery()
     await using var supervisor = new BackendSupervisor(handler);
     Assert(await supervisor.StartAsync(CancellationToken.None) == 9607, "initial discovery");
     Assert(!supervisor.OwnsProcess, "attached backend is not owned");
-    port = 11000;
+    port = 9609;
     var ports = await Task.WhenAll(supervisor.StartAsync(CancellationToken.None),
         supervisor.StartAsync(CancellationToken.None));
-    Assert(ports.All(value => value == 11000), "rediscovery follows changed port into fallback range");
+    Assert(ports.All(value => value == 9609), "rediscovery follows changed port");
     using var canceled = new CancellationTokenSource();
     canceled.Cancel();
     try
@@ -436,8 +515,6 @@ static async Task TestPortConflictStop()
             Reject(() => (target with { ImagePath = "wrong.exe" }).Stop(), "stop rechecks image path");
             Reject(() => PortProcess.Inspect(9600), "management ports cannot be targeted");
             Reject(() => (target with { Port = 9600 }).Stop(), "direct stop rejects management ports");
-            Reject(() => PortProcess.Inspect(11000), "fallback management ports cannot be targeted");
-            Reject(() => (target with { Port = 11000 }).Stop(), "direct stop rejects fallback management ports");
             target.Stop();
             await worker.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(3));
             Assert(worker.HasExited, "only our fixture process was terminated");
